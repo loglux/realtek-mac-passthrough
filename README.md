@@ -16,6 +16,8 @@ The Realtek Windows driver reads that MAC from the ACPI **DSDT**, but by default
 This tool flips the driver's built-in override so it applies the firmware-provided MAC
 **regardless of dock branding** — a pure, reversible registry change.
 
+![Realtek MAC Pass-Through GUI](docs/screenshot.png)
+
 ## Requirements
 - A dock/adapter with a **Realtek USB NIC** (RTL8156 / RTL8156B / RTL8153 …), USB VID `0x0BDA`, using the Realtek Windows driver.
 - A host (laptop) with **BIOS "MAC Address Pass-Through" enabled** so firmware publishes the MAC in ACPI DSDT. The tool checks this for you.
@@ -35,6 +37,14 @@ This tool flips the driver's built-in override so it applies the firmware-provid
 Prefer a window over scripts? Run **`passthrough-GUI.bat`** (it elevates to admin). A small WinForms
 app shows the dock adapter, its current MAC, the pass-through MAC your firmware publishes, the recipe
 state, and **Enable / Revert / Refresh** buttons. Everything is read from the system - nothing hardcoded.
+
+### Status at a glance
+| Situation | Status shown |
+|---|---|
+| Firmware provides a MAC, recipe applied | 🟢 **PASS-THROUGH ACTIVE** |
+| Firmware provides a MAC, recipe not applied | ⚪ **PASS-THROUGH INACTIVE** (Enable works) |
+| Firmware provides no MAC (BIOS feature off or absent) | 🟠 **NO MAC IN FIRMWARE** |
+| No Realtek USB dock NIC found | ⚪ **DOCK NIC NOT FOUND** |
 
 ## How it works (short)
 The driver scans the ACPI **DSDT** for a literal string `_AUXMAC_#AABBCCDDEEFF#` placed there by
