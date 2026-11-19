@@ -4,7 +4,7 @@
    the registry recipe state, and lets you Enable / Revert pass-through. Reads everything from the
    system - nothing hardcoded. Run as Administrator to change settings.
    -Screenshot <png> : render the window to a PNG and exit (for previews).  -Demo : sample data. #>
-param([string]$Screenshot, [switch]$Demo)
+param([string]$Screenshot, [switch]$Demo, [string]$DemoState = 'active-tool')
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -152,9 +152,31 @@ $script:state = @{ adapter = $null; key = $null; fw = $null }
 function Set-Pill([string]$text,[Drawing.Color]$color) { $script:pill.BackColor = $color; $script:pillLbl.Text = $text; $script:pill.Invalidate() }
 function Update-Ui {
   if ($Demo) {
-    $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = '00-11-22-33-44-55'; $script:UI.drv.Text = 'rtu56cx22x64'
-    $script:UI.fw.Text = '00-11-22-33-44-55'; $script:UI.reg.Text = 'ENABLED   (4 / 4 keys set)'
-    Set-Pill 'PASS-THROUGH ACTIVE' $script:T.Success; return
+    $PT = '00-11-22-33-44-55'; $OWN = 'A0-B1-C2-D3-E4-F5'
+    switch ($DemoState) {
+      'active-native' {
+        $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $PT; $script:UI.drv.Text = 'rtu53cx22x64'
+        $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'PASS-THROUGH ACTIVE  (native / auto-recognized)' $script:T.Success }
+      'ready' {
+        $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $OWN; $script:UI.drv.Text = 'rtu56cx22x64'
+        $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'READY  -  press Enable to apply pass-through' $script:T.Accent }
+      'nomac' {
+        $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $OWN; $script:UI.drv.Text = 'rtump64x64'
+        $script:UI.fw.Text = 'not provided by BIOS'; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'BIOS PROVIDES NO MAC  (host limitation, not the dock)' $script:T.Warn }
+      'notfound' {
+        foreach ($k in 'name','mac','drv','fw','reg') { $script:UI[$k].Text = '-' }
+        $btnEnable.Enabled = $false; $btnRevert.Enabled = $false
+        $btnEnable.BackColor = $script:T.SurfAlt; $btnEnable.ForeColor = $script:T.Sub; $btnRevert.ForeColor = $script:T.Sub
+        Set-Pill 'DOCK NIC NOT FOUND  -  plug in the dock' $script:T.Neutral }
+      default {
+        $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $PT; $script:UI.drv.Text = 'rtu56cx22x64'
+        $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'ENABLED   (4 / 4 keys set)'
+        Set-Pill 'PASS-THROUGH ACTIVE  (via this tool)' $script:T.Success }
+    }
+    return
   }
   $a = Get-DockAdapter; $script:state.adapter = $a
   if (-not $a) {
@@ -177,9 +199,10 @@ function Update-Ui {
   elseif ($setN -eq 0) { $script:UI.reg.Text = "not set   (0 / $($RECIPE.Count))" }
   else { $script:UI.reg.Text = "partial   ($setN / $($RECIPE.Count) keys)" }
   $active = $hasFw -and (($a.MacAddress -replace '-','').ToUpper() -eq $fw.ToUpper())
-  if ($active) { Set-Pill 'PASS-THROUGH ACTIVE' $script:T.Success }
-  elseif (-not $hasFw) { Set-Pill 'NO MAC IN FIRMWARE  (pass-through unavailable here)' $script:T.Warn }
-  else { Set-Pill 'PASS-THROUGH INACTIVE' $script:T.Neutral }
+  if ($active -and $setN -eq $RECIPE.Count) { Set-Pill 'PASS-THROUGH ACTIVE  (via this tool)' $script:T.Success }
+  elseif ($active) { Set-Pill 'PASS-THROUGH ACTIVE  (native / auto-recognized)' $script:T.Success }
+  elseif (-not $hasFw) { Set-Pill 'BIOS PROVIDES NO MAC  (host limitation, not the dock)' $script:T.Warn }
+  else { Set-Pill 'READY  -  press Enable to apply pass-through' $script:T.Accent }
 }
 $btnRefresh.Add_Click({ Update-Ui; Write-Log 'refreshed' })
 $btnEnable.Add_Click({

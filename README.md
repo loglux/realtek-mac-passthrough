@@ -55,6 +55,14 @@ then verify with `getmac /v` — the Realtek dock NIC now shows the pass-through
 | Firmware provides no MAC (BIOS feature off or absent) | 🟠 **NO MAC IN FIRMWARE** |
 | No Realtek USB dock NIC found | ⚪ **DOCK NIC NOT FOUND** |
 
+
+The app in each state (native auto-recognized dock, ready-to-enable, host without the feature, nothing plugged):
+
+| | |
+|:--:|:--:|
+| ![ACTIVE - native / auto-recognized](docs/tiers/active-native.png) | ![READY - press Enable](docs/tiers/ready.png) |
+| ![No MAC in firmware (host limitation)](docs/tiers/nomac.png) | ![Dock not found](docs/tiers/notfound.png) |
+
 ## How it works (short)
 The driver scans the ACPI **DSDT** for a literal string `_AUXMAC_#AABBCCDDEEFF#` placed there by
 the firmware, then applies that MAC to the NIC. These per-adapter registry values (REG_DWORD)
