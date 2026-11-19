@@ -31,6 +31,11 @@ This tool flips the driver's built-in override so it applies the firmware-provid
 - Undo: **`passthrough-REVERT.bat`**
 - Inspect only: **`passthrough-STATUS.bat`**
 
+## Graphical version
+Prefer a window over scripts? Run **`passthrough-GUI.bat`** (it elevates to admin). A small WinForms
+app shows the dock adapter, its current MAC, the pass-through MAC your firmware publishes, the recipe
+state, and **Enable / Revert / Refresh** buttons. Everything is read from the system - nothing hardcoded.
+
 ## How it works (short)
 The driver scans the ACPI **DSDT** for a literal string `_AUXMAC_#AABBCCDDEEFF#` placed there by
 the firmware, then applies that MAC to the NIC. These per-adapter registry values (REG_DWORD)
