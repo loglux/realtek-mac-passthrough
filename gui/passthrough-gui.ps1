@@ -52,13 +52,20 @@ function Get-DockAdapter {
   } | Select-Object -First 1
 }
 function Get-DockKey([string]$guid) { Get-ChildItem $CLASS -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty $_.PSPath -Name NetCfgInstanceId -ErrorAction SilentlyContinue).NetCfgInstanceId -eq $guid } | Select-Object -First 1 }
-function Get-DsdtAuxMac {
+function Get-DsdtInfo {
+  # Generic, any-machine: read this host's live ACPI DSDT and report (a) the pass-through MAC the
+  # firmware publishes, and (b) whether the firmware SUPPORTS the feature at all. Standard Windows
+  # API, nothing hardcoded per machine. Supported = the known pass-through plumbing is present:
+  # Dell object AMAC / Lenovo object MACA, or an _AUXMAC_/_RTXMAC_ marker (even a disabled placeholder).
   if (-not ('Fw.Pt' -as [type])) { Add-Type -Namespace Fw -Name Pt -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern uint GetSystemFirmwareTable(uint p, uint t, byte[] b, uint s);' }
-  $sz = [Fw.Pt]::GetSystemFirmwareTable(0x41435049, 0x54445344, $null, 0); if ($sz -le 0) { return $null }
+  $sz = [Fw.Pt]::GetSystemFirmwareTable(0x41435049, 0x54445344, $null, 0); if ($sz -le 0) { return @{ Mac = $null; Supported = $false } }
   $b = New-Object byte[] $sz; [void][Fw.Pt]::GetSystemFirmwareTable(0x41435049, 0x54445344, $b, $sz)
   $t = -join ($b | ForEach-Object { [char]$_ }); $m = [regex]::Match($t, '_[A-Z]{2,6}MAC_#([0-9A-Fa-f]{12})#')
-  if ($m.Success) { return $m.Groups[1].Value } else { return $null }
+  $mac = if ($m.Success) { $m.Groups[1].Value } else { $null }
+  $supported = [bool]($mac -or $t.Contains('AMAC') -or $t.Contains('MACA') -or ($t -match '_[A-Z]{2,6}MAC_#'))
+  return @{ Mac = $mac; Supported = $supported }
 }
+function Get-DsdtAuxMac { (Get-DsdtInfo).Mac }
 function Format-Mac([string]$hex) { if (-not $hex) { return $null }; ($hex -replace '(..)(..)(..)(..)(..)(..)', '$1-$2-$3-$4-$5-$6').ToUpper() }
 
 # ----------------------------------------------------------------------------
@@ -148,7 +155,7 @@ function Write-Log([string]$m) { $log.AppendText(('{0}  {1}{2}' -f (Get-Date -Fo
 # ----------------------------------------------------------------------------
 #  STATE / ACTIONS
 # ----------------------------------------------------------------------------
-$script:state = @{ adapter = $null; key = $null; fw = $null }
+$script:state = @{ adapter = $null; key = $null; fw = $null; supported = $false }
 function Set-Pill([string]$text,[Drawing.Color]$color) { $script:pill.BackColor = $color; $script:pillLbl.Text = $text; $script:pill.Invalidate() }
 function Update-Ui {
   if ($Demo) {
@@ -162,10 +169,14 @@ function Update-Ui {
         $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $OWN; $script:UI.drv.Text = 'rtu56cx22x64'
         $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
         Set-Pill 'READY  -  press Enable to apply pass-through' $script:T.Accent }
-      'nomac' {
+      { $_ -in 'disabled','bios-disabled' } {
         $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $OWN; $script:UI.drv.Text = 'rtump64x64'
-        $script:UI.fw.Text = 'not provided by BIOS'; $script:UI.reg.Text = 'not set   (0 / 4)'
-        Set-Pill 'BIOS PROVIDES NO MAC  (host limitation, not the dock)' $script:T.Warn }
+        $script:UI.fw.Text = 'supported, OFF in BIOS'; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'BIOS SUPPORTS PASS-THROUGH  -  enable it in BIOS setup' $script:T.Warn }
+      { $_ -in 'unsupported','nomac' } {
+        $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $OWN; $script:UI.drv.Text = 'rtump64x64'
+        $script:UI.fw.Text = 'not supported by firmware'; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'BIOS HAS NO PASS-THROUGH  (host firmware, not the dock)' $script:T.Neutral }
       'notfound' {
         foreach ($k in 'name','mac','drv','fw','reg') { $script:UI[$k].Text = '-' }
         $btnEnable.Enabled = $false; $btnRevert.Enabled = $false
@@ -190,8 +201,10 @@ function Update-Ui {
   $btnEnable.BackColor = $script:T.Success; $btnEnable.ForeColor = $script:T.White; $btnRevert.ForeColor = $script:T.Text
   $script:UI.name.Text = $a.Name; $script:UI.mac.Text = $a.MacAddress
   $script:UI.drv.Text = (Get-PnpDeviceProperty -InstanceId $a.PnPDeviceID -KeyName 'DEVPKEY_Device_Service' -ErrorAction SilentlyContinue).Data
-  $fw = Get-DsdtAuxMac; $script:state.fw = $fw; $hasFw = [bool]$fw
-  if ($fw) { $script:UI.fw.Text = (Format-Mac $fw) } else { $script:UI.fw.Text = 'not provided by BIOS' }
+  $dsdt = Get-DsdtInfo; $fw = $dsdt.Mac; $script:state.fw = $fw; $script:state.supported = $dsdt.Supported; $hasFw = [bool]$fw
+  if ($fw)                   { $script:UI.fw.Text = (Format-Mac $fw) }
+  elseif ($dsdt.Supported)   { $script:UI.fw.Text = 'supported, OFF in BIOS' }
+  else                       { $script:UI.fw.Text = 'not supported by firmware' }
   $key = Get-DockKey $a.InterfaceGuid; $script:state.key = $key
   if ($key) { $p = Get-ItemProperty $key.PSPath } else { $p = $null }
   $setN = (@($RECIPE.Keys | Where-Object { $p -and $p.$_ -eq $RECIPE[$_] })).Count
@@ -201,13 +214,17 @@ function Update-Ui {
   $active = $hasFw -and (($a.MacAddress -replace '-','').ToUpper() -eq $fw.ToUpper())
   if ($active -and $setN -eq $RECIPE.Count) { Set-Pill 'PASS-THROUGH ACTIVE  (via this tool)' $script:T.Success }
   elseif ($active) { Set-Pill 'PASS-THROUGH ACTIVE  (native / auto-recognized)' $script:T.Success }
-  elseif (-not $hasFw) { Set-Pill 'BIOS PROVIDES NO MAC  (host limitation, not the dock)' $script:T.Warn }
-  else { Set-Pill 'READY  -  press Enable to apply pass-through' $script:T.Accent }
+  elseif ($hasFw) { Set-Pill 'READY  -  press Enable to apply pass-through' $script:T.Accent }
+  elseif ($dsdt.Supported) { Set-Pill 'BIOS SUPPORTS PASS-THROUGH  -  enable it in BIOS setup' $script:T.Warn }
+  else { Set-Pill 'BIOS HAS NO PASS-THROUGH  (host firmware, not the dock)' $script:T.Neutral }
 }
 $btnRefresh.Add_Click({ Update-Ui; Write-Log 'refreshed' })
 $btnEnable.Add_Click({
   if (-not (Test-Admin)) { [Windows.Forms.MessageBox]::Show('Run this tool as Administrator to change settings.','Not elevated') | Out-Null; return }
-  if (-not $script:state.fw) { [Windows.Forms.MessageBox]::Show('BIOS does not publish a MAC (no _AUXMAC_ in DSDT). Enable MAC Pass-Through in BIOS first.','Cannot enable') | Out-Null; return }
+  if (-not $script:state.fw) {
+    $msg = if ($script:state.supported) { 'BIOS supports MAC Pass-Through but it is OFF. Enable it in BIOS setup (then replug), so firmware publishes the MAC.' }
+           else { 'This firmware has no MAC Pass-Through feature (no AMAC/MACA object in ACPI DSDT). It cannot be enabled here; see README for the manual NetworkAddress alternative.' }
+    [Windows.Forms.MessageBox]::Show($msg,'Cannot enable') | Out-Null; return }
   try { foreach ($n in $RECIPE.Keys) { New-ItemProperty $script:state.key.PSPath -Name $n -Value $RECIPE[$n] -PropertyType DWord -Force | Out-Null }
         Write-Log 'recipe written - unplug and replug the dock'; Update-Ui } catch { Write-Log "error: $_" }
 })

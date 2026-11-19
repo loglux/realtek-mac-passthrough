@@ -48,20 +48,31 @@ then verify with `getmac /v` — the Realtek dock NIC now shows the pass-through
 > or *Integrated NIC MAC*), and let Windows install the Realtek driver for the dock.
 
 ## Status at a glance
+The tool reads this host's **live ACPI DSDT** (standard `GetSystemFirmwareTable` API — nothing hardcoded per
+machine) and tells apart the two very different "no pass-through MAC" cases: a BIOS that **has the feature but
+it is switched off** (go enable it), versus a BIOS that **has no pass-through feature at all** (e.g. many
+desktops / NUCs — nothing to enable here). It detects the feature by the known firmware plumbing: Dell's `AMAC`
+or Lenovo's `MACA` ACPI object (or an `_AUXMAC_` / `_RTXMAC_` marker).
+
 | Situation | Status shown |
 |---|---|
 | Firmware provides a MAC, recipe applied | 🟢 **PASS-THROUGH ACTIVE** |
-| Firmware provides a MAC, recipe not applied | ⚪ **PASS-THROUGH INACTIVE** (Enable works) |
-| Firmware provides no MAC (BIOS feature off or absent) | 🟠 **NO MAC IN FIRMWARE** |
+| Firmware provides a MAC, recipe not applied | 🔵 **READY** (Enable works) |
+| Firmware **supports** pass-through but it is **disabled** in BIOS | 🟠 **BIOS SUPPORTS — enable it in BIOS** |
+| Firmware has **no** pass-through feature at all | ⚪ **BIOS HAS NO PASS-THROUGH** (host firmware) |
 | No Realtek USB dock NIC found | ⚪ **DOCK NIC NOT FOUND** |
 
+> On a host with **no** pass-through feature, firmware can't supply a MAC, so there is nothing for this tool to
+> apply. If you still want the dock NIC to present a specific MAC on that host (Windows only, same as pass-through
+> would achieve), set it manually with the standard Windows adapter property — see **[Host without the feature](#host-without-the-feature)**.
 
-The app in each state (native auto-recognized dock, ready-to-enable, host without the feature, nothing plugged):
+The app in each state — native auto-recognized dock, ready-to-enable, BIOS supports-but-off, BIOS has no feature, nothing plugged:
 
 | | |
 |:--:|:--:|
 | ![ACTIVE - native / auto-recognized](docs/tiers/active-native.png) | ![READY - press Enable](docs/tiers/ready.png) |
-| ![No MAC in firmware (host limitation)](docs/tiers/nomac.png) | ![Dock not found](docs/tiers/notfound.png) |
+| ![BIOS supports pass-through but it is disabled](docs/tiers/disabled.png) | ![BIOS has no pass-through feature](docs/tiers/unsupported.png) |
+| ![Dock not found](docs/tiers/notfound.png) | |
 
 ## How it works (short)
 The driver scans the ACPI **DSDT** for a literal string `_AUXMAC_#AABBCCDDEEFF#` placed there by
@@ -82,6 +93,23 @@ Full mechanism: [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md).
 - **Realtek USB NICs only.** Docks with ASIX / Aquantia / other chips use different drivers and are unaffected. The tool acts only on a confirmed Realtek USB adapter (USB vendor `0x0BDA`).
 - **The host must publish the MAC.** With BIOS pass-through *disabled* (no `_AUXMAC_` in DSDT) there is nothing to apply; the tool detects this and tells you. Hosts without this firmware feature would need a DSDT override (advanced; out of scope here).
 - Verified on a Dell Latitude 5530 + WAVLINK Thunderbolt dock (Realtek RTL8156B), Realtek driver `rtu56cx22x64`. The keys are shared across Realtek's Windows drivers (`rtump*`, `rtu*cx*`).
+
+## Host without the feature
+If the tool reports **BIOS HAS NO PASS-THROUGH**, the firmware has no MAC pass-through feature, so there is no
+firmware MAC to apply and this tool's Enable does nothing. Pass-through can't be *created* from the OS side
+without modifying firmware (out of scope). If you only need the dock NIC to present a specific MAC **in Windows**
+(the same practical result pass-through gives — Windows only, not pre-boot/PXE), set it manually with the standard
+Windows adapter property, e.g. make the dock present this machine's onboard NIC MAC:
+
+```powershell
+# Replace the adapter name and the 12-hex MAC (here: this host's onboard NIC MAC, no separators)
+Set-NetAdapterAdvancedProperty -Name 'Ethernet 2' -RegistryKeyword NetworkAddress -RegistryValue 1C697AD98A33
+# Undo:
+Remove-NetAdapterAdvancedProperty -Name 'Ethernet 2' -RegistryKeyword NetworkAddress
+```
+
+This is a plain manual MAC override (a standard Windows feature), **not** firmware pass-through — you pick the MAC
+yourself and it does not adapt per host. Fully reversible.
 
 ## Safety
 - **Do not** use Device Manager "Disable/Enable" or `Disable-NetAdapter` to re-init the card — on some driver versions this triggers a bugcheck (BSOD `WDF_VIOLATION`). **Physically unplug/replug the dock instead.**

@@ -4,7 +4,7 @@
   How it works: with BIOS "MAC Address Pass-Through" enabled, firmware writes the host MAC into ACPI
   DSDT as _AUXMAC_#AABBCCDDEEFF#. These 4 registry values force the Realtek driver to apply it to the
   dock NIC (otherwise the driver skips passthrough for non-branded docks like WAVLINK).
-  Verified on Dell Latitude 5530 (driver rtu56cx22x64), 2026-11-19 -> the dock NIC adopts the host pass-through MAC.
+  Verified on Dell Latitude 5530 (driver rtu56cx22x64), 2026-11-19 -> dock MAC became 00-BE-43-6B-6A-AF.
   REQUIRES: BIOS "MAC Address Pass-Through" enabled (else no MAC in DSDT; script warns, leaves registry alone).
   Run as ADMIN:
     .\passthrough-enable.ps1           # show state and ENABLE
@@ -25,17 +25,23 @@ function Get-DockKey([string]$guid) {
     (Get-ItemProperty $_.PSPath -Name NetCfgInstanceId -ErrorAction SilentlyContinue).NetCfgInstanceId -eq $guid
   } | Select-Object -First 1
 }
-function Get-DsdtAuxMac {
+function Get-DsdtInfo {
+  # Generic, any-machine: read this host's live ACPI DSDT, report the pass-through MAC the firmware
+  # publishes AND whether the firmware supports the feature at all. Standard Windows API; nothing is
+  # hardcoded per machine. Supported = known pass-through plumbing present (Dell object AMAC /
+  # Lenovo object MACA, or an _AUXMAC_/_RTXMAC_ marker, even a disabled placeholder with no MAC).
   if (-not ('Fw.Pt' -as [type])) {
     Add-Type -Namespace Fw -Name Pt -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern uint GetSystemFirmwareTable(uint p, uint t, byte[] b, uint s);'
   }
   $sz = [Fw.Pt]::GetSystemFirmwareTable(0x41435049, 0x54445344, $null, 0)   # 'ACPI','DSDT'
-  if ($sz -le 0) { return $null }
+  if ($sz -le 0) { return @{ Mac = $null; Supported = $false } }
   $b = New-Object byte[] $sz
   [void][Fw.Pt]::GetSystemFirmwareTable(0x41435049, 0x54445344, $b, $sz)
   $t = -join ($b | ForEach-Object { [char]$_ })
   $m = [regex]::Match($t, '_[A-Z]{2,6}MAC_#[0-9A-Fa-f]{12}#')
-  if ($m.Success) { return $m.Value } else { return $null }
+  $mac = if ($m.Success) { $m.Value } else { $null }
+  $supported = [bool]($mac -or $t.Contains('AMAC') -or $t.Contains('MACA') -or ($t -match '_[A-Z]{2,6}MAC_#'))
+  return @{ Mac = $mac; Supported = $supported }
 }
 
 $a = Get-DockAdapter
@@ -43,13 +49,14 @@ if (-not $a)   { Write-Host 'Dock NIC (Realtek USB 2.5G) not found. Plug in the 
 $key = Get-DockKey $a.InterfaceGuid
 if (-not $key) { Write-Host 'Adapter registry key not found.' -ForegroundColor Red; return }
 $svc = (Get-PnpDeviceProperty -InstanceId $a.PnPDeviceID -KeyName 'DEVPKEY_Device_Service' -ErrorAction SilentlyContinue).Data
-$aux = Get-DsdtAuxMac
+$dsdt = Get-DsdtInfo; $aux = $dsdt.Mac
 
 Write-Host ""
 Write-Host "Adapter : $($a.Name)   MAC=$($a.MacAddress)   driver=$svc"
 Write-Host "Key     : $($key.Name)"
-if ($aux) { Write-Host "DSDT    : $aux   (BIOS passthrough active)" -ForegroundColor Green }
-else      { Write-Host "DSDT    : no _AUXMAC_ string - enable 'MAC Address Pass-Through' in BIOS, else passthrough is impossible" -ForegroundColor Yellow }
+if ($aux)                  { Write-Host "DSDT    : $aux   (BIOS pass-through ON, MAC published)" -ForegroundColor Green }
+elseif ($dsdt.Supported)   { Write-Host "DSDT    : BIOS SUPPORTS pass-through but it is OFF - enable 'MAC Address Pass-Through' in BIOS setup" -ForegroundColor Yellow }
+else                       { Write-Host "DSDT    : firmware has NO pass-through feature (no AMAC/MACA object) - this host cannot do BIOS pass-through" -ForegroundColor Yellow }
 $p = Get-ItemProperty $key.PSPath
 Write-Host ("Recipe  : " + (($RECIPE.Keys | ForEach-Object { "$_=" + $(if ($null -eq $p.$_) {'-'} else {$p.$_}) }) -join ', '))
 
@@ -65,7 +72,8 @@ if ($Revert) {
 # Apply
 if (-not $aux) {
   Write-Host ""
-  Write-Host 'Apply aborted: no MAC in DSDT (see yellow note about BIOS). Registry left unchanged.' -ForegroundColor Red
+  if ($dsdt.Supported) { Write-Host 'Apply aborted: BIOS supports pass-through but it is OFF. Enable it in BIOS setup, replug, then re-run. Registry left unchanged.' -ForegroundColor Red }
+  else                 { Write-Host 'Apply aborted: this firmware has no pass-through feature. Nothing to apply (see README for the manual NetworkAddress alternative). Registry left unchanged.' -ForegroundColor Red }
   return
 }
 foreach ($n in $RECIPE.Keys) { New-ItemProperty $key.PSPath -Name $n -Value $RECIPE[$n] -PropertyType DWord -Force | Out-Null }
