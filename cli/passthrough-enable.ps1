@@ -59,6 +59,15 @@ elseif ($dsdt.Supported)   { Write-Host "DSDT    : BIOS SUPPORTS pass-through bu
 else                       { Write-Host "DSDT    : firmware has NO pass-through feature (no AMAC/MACA object) - this host cannot do BIOS pass-through" -ForegroundColor Yellow }
 $p = Get-ItemProperty $key.PSPath
 Write-Host ("Recipe  : " + (($RECIPE.Keys | ForEach-Object { "$_=" + $(if ($null -eq $p.$_) {'-'} else {$p.$_}) }) -join ', '))
+# Dock axis: native vs needs-recipe (shown by current pass-through state)
+$auxHex = if ($aux) { [regex]::Match($aux, '#([0-9A-Fa-f]{12})#').Groups[1].Value } else { '' }
+$setN   = (@($RECIPE.Keys | Where-Object { $p.$_ -eq $RECIPE[$_] })).Count
+$active = [bool]($aux) -and ((($a.MacAddress -replace '-','').ToUpper()) -eq $auxHex.ToUpper())
+$dockState = if ($active -and $setN -eq $RECIPE.Count) { 'active, via recipe (this tool)' }
+             elseif ($active) { 'active, native (auto-recognized)' }
+             elseif ($aux)    { 'generic - needs recipe (run without -Status to Enable)' }
+             else             { '- (no host MAC to pass through)' }
+Write-Host "Dock    : $dockState"
 
 if ($Status) { return }
 
@@ -77,7 +86,7 @@ if (-not $aux) {
   return
 }
 foreach ($n in $RECIPE.Keys) { New-ItemProperty $key.PSPath -Name $n -Value $RECIPE[$n] -PropertyType DWord -Force | Out-Null }
-$exp= ($aux -replace '[_#A-Za-z]','') -replace '(..)(..)(..)(..)(..)(..)','$1-$2-$3-$4-$5-$6'
+$exp = $auxHex -replace '(..)(..)(..)(..)(..)(..)','$1-$2-$3-$4-$5-$6'
 Write-Host ""
 Write-Host ("ENABLED: " + (($RECIPE.Keys | ForEach-Object { "$_=$($RECIPE[$_])" }) -join ', ')) -ForegroundColor Green
 Write-Host "Expected dock MAC after replug: $exp" -ForegroundColor Green

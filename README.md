@@ -49,24 +49,33 @@ then verify with `getmac /v` — the Realtek dock NIC now shows the pass-through
 
 ## Status at a glance
 The tool reads this host's **live ACPI DSDT** (standard `GetSystemFirmwareTable` API — nothing hardcoded per
-machine) and tells apart the two very different "no pass-through MAC" cases: a BIOS that **has the feature but
-it is switched off** (go enable it), versus a BIOS that **has no pass-through feature at all** (e.g. many
-desktops / NUCs — nothing to enable here). It detects the feature by the known firmware plumbing: Dell's `AMAC`
-or Lenovo's `MACA` ACPI object (or an `_AUXMAC_` / `_RTXMAC_` marker).
+machine) and reports **two independent axes**, because they really are separate things:
 
-| Situation | Status shown |
-|---|---|
-| Firmware provides a MAC, recipe applied | 🟢 **PASS-THROUGH ACTIVE** |
-| Firmware provides a MAC, recipe not applied | 🔵 **READY** (Enable works) |
-| Firmware **supports** pass-through but it is **disabled** in BIOS | 🟠 **BIOS SUPPORTS — enable it in BIOS** |
-| Firmware has **no** pass-through feature at all | ⚪ **BIOS HAS NO PASS-THROUGH** (host firmware) |
-| No Realtek USB dock NIC found | ⚪ **DOCK NIC NOT FOUND** |
+- **Host (BIOS):** does the firmware have the pass-through feature, and is it on? — *supported & ON* (publishes a
+  MAC) / *supported but OFF* (enable it in BIOS setup) / *no feature at all* (e.g. many desktops & NUCs). Detected
+  by the known firmware plumbing: Dell's `AMAC` or Lenovo's `MACA` ACPI object (or an `_AUXMAC_` / `_RTXMAC_` marker).
+- **Dock (adapter):** does the dock apply pass-through **natively**, or does it need the registry **recipe**? — a
+  branded dock the driver auto-recognizes works on its own; a **generic** dock (same Realtek chip, no vendor marker)
+  is skipped by the driver and needs this tool's recipe. When pass-through is active, the tool shows which of the two
+  it is; a dormant generic dock just shows *needs recipe (Enable)*.
+
+The top banner is the **combined verdict** and names the bottleneck.
+
+| Host (BIOS) | Dock | Banner |
+|---|---|---|
+| supported, ON | active, via recipe | 🟢 **PASS-THROUGH ACTIVE** (via this tool) |
+| supported, ON | active, native | 🟢 **PASS-THROUGH ACTIVE** (native dock) |
+| supported, ON | generic, not applied | 🔵 **READY** — host OK, press Enable |
+| supported, OFF | — | 🟠 **ENABLE IN BIOS** — feature present but off |
+| no feature | — (dock is fine) | ⚪ **NO HOST PASS-THROUGH** (BIOS limitation) |
+| — | not found | ⚪ **DOCK NIC NOT FOUND** |
 
 > On a host with **no** pass-through feature, firmware can't supply a MAC, so there is nothing for this tool to
-> apply. If you still want the dock NIC to present a specific MAC on that host (Windows only, same as pass-through
-> would achieve), set it manually with the standard Windows adapter property — see **[Host without the feature](#host-without-the-feature)**.
+> apply — the dock itself is fine. If you still want the dock NIC to present a specific MAC on that host (Windows
+> only, same as pass-through would achieve), set it manually with the standard Windows adapter property — see
+> **[Host without the feature](#host-without-the-feature)**.
 
-The app in each state — native auto-recognized dock, ready-to-enable, BIOS supports-but-off, BIOS has no feature, nothing plugged:
+The app in each state — native dock (active), ready (host OK / dock needs recipe), host feature off, host has no feature, nothing plugged:
 
 | | |
 |:--:|:--:|

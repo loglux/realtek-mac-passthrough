@@ -89,7 +89,7 @@ function Add-Row($parent,[string]$cap,[int]$y,[string]$keyName,[switch]$mono) {
   $v = New-Object Windows.Forms.Label; if ($mono) { $v.Font = $script:F.Mono } else { $v.Font = $script:F.Value }; $v.ForeColor = $script:T.Text; $v.AutoSize = $true; $v.Location = New-Object Drawing.Point(150,($y-1)); $parent.Controls.Add($v); $script:UI[$keyName] = $v
 }
 function New-Button([string]$text,[int]$x,[string]$kind) {
-  $b = New-Object Windows.Forms.Button; $b.Text = $text; $b.Size = New-Object Drawing.Size(148,40); $b.Location = New-Object Drawing.Point($x,428)
+  $b = New-Object Windows.Forms.Button; $b.Text = $text; $b.Size = New-Object Drawing.Size(148,40); $b.Location = New-Object Drawing.Point($x,472)
   $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0; $b.Font = $script:F.Button; $b.Cursor = 'Hand'
   if ($kind -eq 'primary') {
     $b.BackColor = $script:T.Success; $b.ForeColor = $script:T.White; $b.FlatAppearance.MouseOverBackColor = $script:T.SuccessHi
@@ -114,7 +114,7 @@ function New-AppIcon {
 #  WINDOW
 # ----------------------------------------------------------------------------
 $script:form = New-Object Windows.Forms.Form
-$script:form.Text = 'Realtek MAC Pass-Through'; $script:form.ClientSize = New-Object Drawing.Size(520,584)
+$script:form.Text = 'Realtek MAC Pass-Through'; $script:form.ClientSize = New-Object Drawing.Size(520,628)
 $script:form.StartPosition = 'CenterScreen'; $script:form.BackColor = $script:T.Bg; $script:form.Font = $script:F.Sub
 $script:form.FormBorderStyle = 'FixedSingle'; $script:form.MaximizeBox = $false
 try { $script:form.Icon = New-AppIcon } catch {}
@@ -133,23 +133,25 @@ $script:form.Controls.Add($script:pill)
 $script:pillLbl = New-Object Windows.Forms.Label; $script:pillLbl.Font = $script:F.Banner; $script:pillLbl.ForeColor = $script:T.White; $script:pillLbl.TextAlign = 'MiddleLeft'
 $script:pillLbl.Location = New-Object Drawing.Point(40,0); $script:pillLbl.Size = New-Object Drawing.Size(428,46); $script:pill.Controls.Add($script:pillLbl)
 
-$card1 = New-Card 24 140 472 98 'Dock adapter'
+$card1 = New-Card 24 140 472 120 'Dock  (adapter)'
 Add-Row $card1 'Name'        34 'name'
 Add-Row $card1 'Current MAC' 56 'mac' -mono
 Add-Row $card1 'Driver'      78 'drv'
-$card2 = New-Card 24 250 472 62 'Firmware  (BIOS - ACPI DSDT)'
-Add-Row $card2 'Pass-through MAC' 32 'fw' -mono
-$card3 = New-Card 24 324 472 62 'Registry'
+Add-Row $card1 'Pass-through' 100 'dock'
+$card2 = New-Card 24 272 472 84 'Host  (BIOS - ACPI DSDT)'
+Add-Row $card2 'Pass-through'     32 'host'
+Add-Row $card2 'Published MAC'    54 'fw' -mono
+$card3 = New-Card 24 368 472 62 'Registry'
 Add-Row $card3 'Recipe state' 32 'reg'
 
-$note = New-Object Windows.Forms.Label; $note.Text = 'After Enable / Revert: physically unplug and replug the dock  (do NOT Disable/Enable the adapter).'; $note.Font = $script:F.Sub; $note.ForeColor = $script:T.Sub; $note.Location = New-Object Drawing.Point(24,394); $note.Size = New-Object Drawing.Size(472,32); $script:form.Controls.Add($note)
+$note = New-Object Windows.Forms.Label; $note.Text = 'After Enable / Revert: physically unplug and replug the dock  (do NOT Disable/Enable the adapter).'; $note.Font = $script:F.Sub; $note.ForeColor = $script:T.Sub; $note.Location = New-Object Drawing.Point(24,438); $note.Size = New-Object Drawing.Size(472,32); $script:form.Controls.Add($note)
 
 $btnEnable  = New-Button 'Enable'  24  'primary'
 $btnRevert  = New-Button 'Revert'  186 'secondary'
 $btnRefresh = New-Button 'Refresh' 348 'secondary'
 
 $log = New-Object Windows.Forms.TextBox; $log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = 'Vertical'; $log.BorderStyle = 'FixedSingle'; $log.BackColor = $script:T.Surface; $log.ForeColor = $script:T.Sub; $log.Font = $script:F.Mono
-$log.Location = New-Object Drawing.Point(24,480); $log.Size = New-Object Drawing.Size(472,80); $script:form.Controls.Add($log)
+$log.Location = New-Object Drawing.Point(24,524); $log.Size = New-Object Drawing.Size(472,80); $script:form.Controls.Add($log)
 function Write-Log([string]$m) { $log.AppendText(('{0}  {1}{2}' -f (Get-Date -Format HH:mm:ss), $m, "`r`n")) }
 
 # ----------------------------------------------------------------------------
@@ -163,35 +165,35 @@ function Update-Ui {
     switch ($DemoState) {
       'active-native' {
         $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $PT; $script:UI.drv.Text = 'rtu53cx22x64'
-        $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
-        Set-Pill 'PASS-THROUGH ACTIVE  (native / auto-recognized)' $script:T.Success }
+        $script:UI.dock.Text = 'active, native (auto-recognized)'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'PASS-THROUGH ACTIVE  (native dock)' $script:T.Success }
       'ready' {
         $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $OWN; $script:UI.drv.Text = 'rtu56cx22x64'
-        $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
-        Set-Pill 'READY  -  press Enable to apply pass-through' $script:T.Accent }
+        $script:UI.dock.Text = 'generic - needs recipe (Enable)'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'READY  -  host OK, press Enable (dock needs the recipe)' $script:T.Accent }
       { $_ -in 'disabled','bios-disabled' } {
         $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $OWN; $script:UI.drv.Text = 'rtump64x64'
-        $script:UI.fw.Text = 'supported, OFF in BIOS'; $script:UI.reg.Text = 'not set   (0 / 4)'
-        Set-Pill 'BIOS SUPPORTS PASS-THROUGH  -  enable it in BIOS setup' $script:T.Warn }
+        $script:UI.dock.Text = '- (no host MAC to pass through)'; $script:UI.host.Text = 'supported, OFF  (enable in BIOS)'; $script:UI.fw.Text = '-'; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'ENABLE IN BIOS  -  host has the feature but it is OFF' $script:T.Warn }
       { $_ -in 'unsupported','nomac' } {
         $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $OWN; $script:UI.drv.Text = 'rtump64x64'
-        $script:UI.fw.Text = 'not supported by firmware'; $script:UI.reg.Text = 'not set   (0 / 4)'
-        Set-Pill 'BIOS HAS NO PASS-THROUGH  (host firmware, not the dock)' $script:T.Neutral }
+        $script:UI.dock.Text = '- (no host MAC to pass through)'; $script:UI.host.Text = 'not supported by firmware'; $script:UI.fw.Text = '-'; $script:UI.reg.Text = 'not set   (0 / 4)'
+        Set-Pill 'NO HOST PASS-THROUGH  (BIOS limitation, the dock is fine)' $script:T.Neutral }
       'notfound' {
-        foreach ($k in 'name','mac','drv','fw','reg') { $script:UI[$k].Text = '-' }
+        foreach ($k in 'name','mac','drv','dock','host','fw','reg') { $script:UI[$k].Text = '-' }
         $btnEnable.Enabled = $false; $btnRevert.Enabled = $false
         $btnEnable.BackColor = $script:T.SurfAlt; $btnEnable.ForeColor = $script:T.Sub; $btnRevert.ForeColor = $script:T.Sub
         Set-Pill 'DOCK NIC NOT FOUND  -  plug in the dock' $script:T.Neutral }
       default {
         $script:UI.name.Text = 'Ethernet 5'; $script:UI.mac.Text = $PT; $script:UI.drv.Text = 'rtu56cx22x64'
-        $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'ENABLED   (4 / 4 keys set)'
+        $script:UI.dock.Text = 'active, via recipe (this tool)'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'ENABLED   (4 / 4 keys set)'
         Set-Pill 'PASS-THROUGH ACTIVE  (via this tool)' $script:T.Success }
     }
     return
   }
   $a = Get-DockAdapter; $script:state.adapter = $a
   if (-not $a) {
-    foreach ($k in 'name','mac','drv','fw','reg') { $script:UI[$k].Text = '-' }
+    foreach ($k in 'name','mac','drv','dock','host','fw','reg') { $script:UI[$k].Text = '-' }
     Set-Pill 'DOCK NIC NOT FOUND  -  plug in the dock' $script:T.Neutral
     $btnEnable.Enabled = $false; $btnRevert.Enabled = $false
     $btnEnable.BackColor = $script:T.SurfAlt; $btnEnable.ForeColor = $script:T.Sub; $btnRevert.ForeColor = $script:T.Sub
@@ -202,21 +204,29 @@ function Update-Ui {
   $script:UI.name.Text = $a.Name; $script:UI.mac.Text = $a.MacAddress
   $script:UI.drv.Text = (Get-PnpDeviceProperty -InstanceId $a.PnPDeviceID -KeyName 'DEVPKEY_Device_Service' -ErrorAction SilentlyContinue).Data
   $dsdt = Get-DsdtInfo; $fw = $dsdt.Mac; $script:state.fw = $fw; $script:state.supported = $dsdt.Supported; $hasFw = [bool]$fw
-  if ($fw)                   { $script:UI.fw.Text = (Format-Mac $fw) }
-  elseif ($dsdt.Supported)   { $script:UI.fw.Text = 'supported, OFF in BIOS' }
-  else                       { $script:UI.fw.Text = 'not supported by firmware' }
+  # ---- HOST (firmware) axis ----
+  if ($fw)                 { $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = (Format-Mac $fw) }
+  elseif ($dsdt.Supported) { $script:UI.host.Text = 'supported, OFF  (enable in BIOS)'; $script:UI.fw.Text = '-' }
+  else                     { $script:UI.host.Text = 'not supported by firmware'; $script:UI.fw.Text = '-' }
+  # ---- Registry recipe ----
   $key = Get-DockKey $a.InterfaceGuid; $script:state.key = $key
   if ($key) { $p = Get-ItemProperty $key.PSPath } else { $p = $null }
   $setN = (@($RECIPE.Keys | Where-Object { $p -and $p.$_ -eq $RECIPE[$_] })).Count
   if ($setN -eq $RECIPE.Count) { $script:UI.reg.Text = "ENABLED   ($setN / $($RECIPE.Count) keys set)" }
   elseif ($setN -eq 0) { $script:UI.reg.Text = "not set   (0 / $($RECIPE.Count))" }
   else { $script:UI.reg.Text = "partial   ($setN / $($RECIPE.Count) keys)" }
+  # ---- DOCK axis ----
   $active = $hasFw -and (($a.MacAddress -replace '-','').ToUpper() -eq $fw.ToUpper())
+  if     ($active -and $setN -eq $RECIPE.Count) { $script:UI.dock.Text = 'active, via recipe (this tool)' }
+  elseif ($active)                              { $script:UI.dock.Text = 'active, native (auto-recognized)' }
+  elseif ($hasFw)                               { $script:UI.dock.Text = 'generic - needs recipe (Enable)' }
+  else                                          { $script:UI.dock.Text = '- (no host MAC to pass through)' }
+  # ---- combined verdict pill (names the bottleneck) ----
   if ($active -and $setN -eq $RECIPE.Count) { Set-Pill 'PASS-THROUGH ACTIVE  (via this tool)' $script:T.Success }
-  elseif ($active) { Set-Pill 'PASS-THROUGH ACTIVE  (native / auto-recognized)' $script:T.Success }
-  elseif ($hasFw) { Set-Pill 'READY  -  press Enable to apply pass-through' $script:T.Accent }
-  elseif ($dsdt.Supported) { Set-Pill 'BIOS SUPPORTS PASS-THROUGH  -  enable it in BIOS setup' $script:T.Warn }
-  else { Set-Pill 'BIOS HAS NO PASS-THROUGH  (host firmware, not the dock)' $script:T.Neutral }
+  elseif ($active) { Set-Pill 'PASS-THROUGH ACTIVE  (native dock)' $script:T.Success }
+  elseif ($hasFw) { Set-Pill 'READY  -  host OK, press Enable (dock needs the recipe)' $script:T.Accent }
+  elseif ($dsdt.Supported) { Set-Pill 'ENABLE IN BIOS  -  host has the feature but it is OFF' $script:T.Warn }
+  else { Set-Pill 'NO HOST PASS-THROUGH  (BIOS limitation, the dock is fine)' $script:T.Neutral }
 }
 $btnRefresh.Add_Click({ Update-Ui; Write-Log 'refreshed' })
 $btnEnable.Add_Click({
