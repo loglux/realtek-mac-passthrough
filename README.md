@@ -28,8 +28,10 @@ Two ways to use it — pick one. Both read everything from the system and are fu
 
 ### GUI  (recommended)
 In the **`gui/`** folder, run **`passthrough-GUI.bat`** (it elevates to Administrator). A small window
-shows the dock adapter, its current MAC, the pass-through MAC your firmware publishes, the recipe
-state, and **Enable / Revert / Refresh** buttons.
+identifies your dock as a **device** — read live from the system: what it is (e.g. *Thunderbolt 4
+DisplayLink dock*), how it is connected (**Thunderbolt** vs plain USB), the **chip + speed**
+(e.g. *RTL8156B · 2.5GbE*), its USB id, MAC and link state — alongside the pass-through status
+(host + dock, see below), the recipe state, and **Enable / Revert / Refresh** buttons.
 
 ### CLI  (scripting / automation)
 In the **`cli/`** folder, as Administrator:

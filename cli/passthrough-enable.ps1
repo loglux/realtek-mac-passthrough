@@ -18,7 +18,39 @@ $RECIPE = [ordered]@{ EnableManualCloneMAC = 1; AUXMacType = 3; AUXMacSupportVer
 $CLASS  = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}'
 
 function Get-DockAdapter {
-  Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'Realtek.*USB|8156|2\.5GbE|2\.5G' } | Select-Object -First 1
+  # a Realtek USB NIC only (USB vendor 0BDA) - these registry keys are Realtek-specific
+  Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+    $_.PnPDeviceID -match '^USB\\VID_0BDA' -or ($_.InterfaceDescription -match 'Realtek' -and $_.InterfaceDescription -match 'USB|2\.5G')
+  } | Select-Object -First 1
+}
+function Get-DockInfo($a) {
+  # Device-level facts read live from PnP: chip + speed, USB id, connection (Thunderbolt/USB), dock profile, link.
+  if (-not $a) { return @{ Found = $false } }
+  $svc = (Get-PnpDeviceProperty -InstanceId $a.PnPDeviceID -KeyName 'DEVPKEY_Device_Service' -EA SilentlyContinue).Data
+  $hw  = (Get-PnpDeviceProperty -InstanceId $a.PnPDeviceID -KeyName 'DEVPKEY_Device_HardwareIds' -EA SilentlyContinue).Data
+  $hwid = ($hw | Where-Object { $_ -match 'REV_' } | Select-Object -First 1); if (-not $hwid) { $hwid = $a.PnPDeviceID }
+  $pidv = [regex]::Match($hwid,'PID_([0-9A-Fa-f]{4})').Groups[1].Value.ToUpper()
+  $rev  = [regex]::Match($hwid,'REV_([0-9A-Fa-f]{4})').Groups[1].Value
+  $revN = if ($rev) { [Convert]::ToInt32($rev,16) } else { 0 }
+  switch ($pidv) {
+    '8156' { $chip = $(if ($revN -ge 0x3100) {'RTL8156B'} else {'RTL8156'}); $spd = '2.5GbE' }
+    '8153' { $chip = $(if ($revN -ge 0x6000) {'RTL8153D'} else {'RTL8153'}); $spd = '1GbE' }
+    '8152' { $chip = 'RTL8152'; $spd = '100M' }
+    '8157' { $chip = 'RTL8157'; $spd = '5GbE' }
+    default { $chip = "0BDA:$pidv"; $spd = 'USB NIC' }
+  }
+  $present = Get-PnpDevice -PresentOnly -EA SilentlyContinue
+  $tbt = $null
+  foreach ($dv in $present) {
+    $bd = (Get-PnpDeviceProperty -InstanceId $dv.InstanceId -KeyName 'DEVPKEY_Device_BusReportedDeviceDesc' -EA SilentlyContinue).Data
+    if ($bd -and $bd -match 'TBT(\d)') { $tbt = $Matches[1]; break }
+  }
+  $tbCtl = [bool]($present | Where-Object { $_.FriendlyName -match 'Thunderbolt.*Controller' })
+  $conn  = if ($tbt) { "Thunderbolt $tbt" } elseif ($tbCtl) { 'Thunderbolt / USB4' } else { 'USB' }
+  $hasDL = [bool]($present | Where-Object { $_.InstanceId -match 'VID_17E9' })
+  $device = if ($tbt -and $hasDL) { "Thunderbolt $tbt DisplayLink dock" } elseif ($tbt) { "Thunderbolt $tbt dock" } elseif ($hasDL) { 'DisplayLink USB dock' } else { 'USB network adapter' }
+  $link = if ($a.MediaConnectionState -eq 'Connected') { "$($a.LinkSpeed)" } else { 'Disconnected' }
+  @{ Found = $true; Device = $device; Connection = $conn; Chip = "$chip ($spd) - 0BDA:$pidv rev $rev"; Link = $link; Driver = $svc }
 }
 function Get-DockKey([string]$guid) {
   Get-ChildItem $CLASS | Where-Object {
@@ -48,11 +80,13 @@ $a = Get-DockAdapter
 if (-not $a)   { Write-Host 'Dock NIC (Realtek USB 2.5G) not found. Plug in the dock.' -ForegroundColor Red; return }
 $key = Get-DockKey $a.InterfaceGuid
 if (-not $key) { Write-Host 'Adapter registry key not found.' -ForegroundColor Red; return }
-$svc = (Get-PnpDeviceProperty -InstanceId $a.PnPDeviceID -KeyName 'DEVPKEY_Device_Service' -ErrorAction SilentlyContinue).Data
+$di = Get-DockInfo $a
 $dsdt = Get-DsdtInfo; $aux = $dsdt.Mac
 
 Write-Host ""
-Write-Host "Adapter : $($a.Name)   MAC=$($a.MacAddress)   driver=$svc"
+Write-Host "Device  : $($di.Device)   [$($di.Connection)]"
+Write-Host "Chip    : $($di.Chip)"
+Write-Host "Adapter : $($a.Name)   MAC=$($a.MacAddress)   link=$($di.Link)   driver=$($di.Driver)"
 Write-Host "Key     : $($key.Name)"
 if ($aux)                  { Write-Host "DSDT    : $aux   (BIOS pass-through ON, MAC published)" -ForegroundColor Green }
 elseif ($dsdt.Supported)   { Write-Host "DSDT    : BIOS SUPPORTS pass-through but it is OFF - enable 'MAC Address Pass-Through' in BIOS setup" -ForegroundColor Yellow }
