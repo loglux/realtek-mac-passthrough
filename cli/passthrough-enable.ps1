@@ -102,6 +102,7 @@ $dockState = if ($active -and $setN -eq $RECIPE.Count) { 'active, via recipe (th
              elseif ($aux)    { 'generic - needs recipe (run without -Status to Enable)' }
              else             { '- (no host MAC to pass through)' }
 Write-Host "Dock    : $dockState"
+Write-Host "Scope   : this tool configures the Windows (post-boot) layer; pre-boot / PXE pass-through is a firmware feature (Dell/Lenovo), not set here." -ForegroundColor DarkGray
 
 if ($Status) { return }
 

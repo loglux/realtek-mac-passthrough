@@ -28,10 +28,12 @@ Two ways to use it — pick one. Both read everything from the system and are fu
 
 ### GUI  (recommended)
 In the **`gui/`** folder, run **`passthrough-GUI.bat`** (it elevates to Administrator). A small window
-identifies your dock as a **device** — read live from the system: what it is (e.g. *Thunderbolt 4
-DisplayLink dock*), how it is connected (**Thunderbolt** vs plain USB), the **chip + speed**
-(e.g. *RTL8156B · 2.5GbE*), its USB id, MAC and link state — alongside the pass-through status
-(host + dock, see below), the recipe state, and **Enable / Revert / Refresh** buttons.
+leads with an **Analysis checklist** — the step-by-step chain that produces the verdict, each condition
+marked ✓ / ✗ / ~ (dock adapter, dock capable, host feature, host MAC, recipe) so you can see *why* at a
+glance and which side is the bottleneck. Below it, the dock is identified as a **device** — read live
+from the system: what it is (e.g. *Thunderbolt 4 DisplayLink dock*), how it is connected (**Thunderbolt**
+vs plain USB), the **chip + speed** (e.g. *RTL8156B · 2.5GbE*), its USB id, MAC and link state — plus the
+host (BIOS) facts and **Enable / Revert / Refresh** buttons.
 
 ### CLI  (scripting / automation)
 In the **`cli/`** folder, as Administrator:
@@ -103,6 +105,7 @@ Full mechanism: [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md).
 ## Scope & limitations
 - **Realtek USB NICs only.** Docks with ASIX / Aquantia / other chips use different drivers and are unaffected. The tool acts only on a confirmed Realtek USB adapter (USB vendor `0x0BDA`).
 - **The host must publish the MAC.** With BIOS pass-through *disabled* (no `_AUXMAC_` in DSDT) there is nothing to apply; the tool detects this and tells you. Hosts without this firmware feature would need a DSDT override (advanced; out of scope here).
+- **Windows (post-boot) layer only.** Pass-through has two independent layers: the host firmware can also apply the MAC *before* the OS (pre-boot / PXE), and the Realtek chip is accepted there only if it is a vendor-recognized variant (an eFuse pass-through bit or an OEM chip bin). This tool forces the **Windows** layer via the registry recipe, which works regardless of that hardware marker — but only after Windows loads. It does **not** affect pre-boot/PXE; that remains the firmware's own decision.
 - Verified on a Dell Latitude 5530 + WAVLINK Thunderbolt dock (Realtek RTL8156B), Realtek driver `rtu56cx22x64`. The keys are shared across Realtek's Windows drivers (`rtump*`, `rtu*cx*`).
 
 ## Host without the feature

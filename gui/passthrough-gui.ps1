@@ -25,6 +25,7 @@ $script:T = @{
   SuccessHi = [Drawing.Color]::FromArgb(18,140,72)
   Neutral   = [Drawing.Color]::FromArgb(134,140,148)
   Warn      = [Drawing.Color]::FromArgb(224,138,30)
+  Danger    = [Drawing.Color]::FromArgb(214,69,69)
   White     = [Drawing.Color]::White
   Pad       = 24
 }
@@ -34,6 +35,7 @@ $script:F = @{
   Section = New-Object Drawing.Font('Segoe UI',8,[Drawing.FontStyle]::Bold)
   Caption = New-Object Drawing.Font('Segoe UI',9)
   Value   = New-Object Drawing.Font('Segoe UI',9.5,[Drawing.FontStyle]::Bold)
+  Glyph   = New-Object Drawing.Font('Segoe UI',11,[Drawing.FontStyle]::Bold)
   Mono    = New-Object Drawing.Font('Consolas',10)
   Banner  = New-Object Drawing.Font('Segoe UI',12,[Drawing.FontStyle]::Bold)
   Button  = New-Object Drawing.Font('Segoe UI',9.5,[Drawing.FontStyle]::Bold)
@@ -72,7 +74,9 @@ function Get-DockInfo($a) {
   }
   $present = Get-PnpDevice -PresentOnly -EA SilentlyContinue
   $tbt = $null
-  foreach ($dv in $present) {
+  # TBT* product strings live on USB bus devices only - scan just those (dozens), not every PnP node
+  # (hundreds), or the per-device property query freezes the UI thread for seconds on Refresh.
+  foreach ($dv in @($present | Where-Object { $_.InstanceId -like 'USB\*' })) {
     $bd = (Get-PnpDeviceProperty -InstanceId $dv.InstanceId -KeyName 'DEVPKEY_Device_BusReportedDeviceDesc' -EA SilentlyContinue).Data
     if ($bd -and $bd -match 'TBT(\d)') { $tbt = $Matches[1]; break }
   }
@@ -82,7 +86,8 @@ function Get-DockInfo($a) {
   $device = if ($tbt -and $hasDL) { "Thunderbolt $tbt DisplayLink dock" } elseif ($tbt) { "Thunderbolt $tbt dock" } elseif ($hasDL) { 'DisplayLink USB dock' } else { 'USB network adapter' }
   $link = if ($a.MediaConnectionState -eq 'Connected') { "$($a.LinkSpeed)" } else { 'Disconnected' }
   @{ Found = $true; Device = $device; Connection = $conn; Chip = "$chip  ($spd)  -  0BDA:$pidv rev $rev";
-     Mac = $a.MacAddress; Link = "$link  -  $svc" }
+     Mac = $a.MacAddress; Link = "$link  -  $svc";
+     Pid = $pidv; ChipShort = $chip; Capable = ($pidv -in '8156','8153','8152','8157') }
 }
 function Get-DsdtInfo {
   # Generic, any-machine: read this host's live ACPI DSDT and report (a) the pass-through MAC the
@@ -120,8 +125,23 @@ function Add-Row($parent,[string]$cap,[int]$y,[string]$keyName,[switch]$mono) {
   $c = New-Object Windows.Forms.Label; $c.Text = $cap; $c.Font = $script:F.Caption; $c.ForeColor = $script:T.Sub; $c.AutoSize = $true; $c.Location = New-Object Drawing.Point(14,$y); $parent.Controls.Add($c)
   $v = New-Object Windows.Forms.Label; if ($mono) { $v.Font = $script:F.Mono } else { $v.Font = $script:F.Value }; $v.ForeColor = $script:T.Text; $v.AutoSize = $true; $v.Location = New-Object Drawing.Point(150,($y-1)); $parent.Controls.Add($v); $script:UI[$keyName] = $v
 }
+function Add-Step($parent,[string]$cap,[int]$y,[string]$key) {
+  # one checklist row: status glyph + condition name + live detail. Set later via Set-Step.
+  $g = New-Object Windows.Forms.Label; $g.Font = $script:F.Glyph; $g.ForeColor = $script:T.Neutral; $g.AutoSize = $true; $g.Text = [char]0x2022; $g.Location = New-Object Drawing.Point(16,($y-3)); $parent.Controls.Add($g); $script:UI["${key}G"] = $g
+  $c = New-Object Windows.Forms.Label; $c.Text = $cap; $c.Font = $script:F.Caption; $c.ForeColor = $script:T.Sub; $c.AutoSize = $true; $c.Location = New-Object Drawing.Point(40,$y); $parent.Controls.Add($c)
+  $v = New-Object Windows.Forms.Label; $v.Font = $script:F.Caption; $v.ForeColor = $script:T.Text; $v.AutoSize = $true; $v.Location = New-Object Drawing.Point(150,$y); $parent.Controls.Add($v); $script:UI["${key}V"] = $v
+}
+function Set-Step([string]$key,[string]$kind,[string]$text) {
+  $g = $script:UI["${key}G"]; $v = $script:UI["${key}V"]; if (-not $g) { return }; $v.Text = $text
+  switch ($kind) {
+    'ok'   { $g.Text = [char]0x2713; $g.ForeColor = $script:T.Success }   # check
+    'no'   { $g.Text = [char]0x2717; $g.ForeColor = $script:T.Danger }    # cross
+    default { $g.Text = [char]0x007E; $g.ForeColor = $script:T.Warn }     # tilde = partial / N-A
+  }
+}
+$script:BtnY = 662
 function New-Button([string]$text,[int]$x,[string]$kind) {
-  $b = New-Object Windows.Forms.Button; $b.Text = $text; $b.Size = New-Object Drawing.Size(148,40); $b.Location = New-Object Drawing.Point($x,518)
+  $b = New-Object Windows.Forms.Button; $b.Text = $text; $b.Size = New-Object Drawing.Size(148,40); $b.Location = New-Object Drawing.Point($x,$script:BtnY)
   $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0; $b.Font = $script:F.Button; $b.Cursor = 'Hand'
   if ($kind -eq 'primary') {
     $b.BackColor = $script:T.Success; $b.ForeColor = $script:T.White; $b.FlatAppearance.MouseOverBackColor = $script:T.SuccessHi
@@ -146,7 +166,7 @@ function New-AppIcon {
 #  WINDOW
 # ----------------------------------------------------------------------------
 $script:form = New-Object Windows.Forms.Form
-$script:form.Text = 'Realtek MAC Pass-Through'; $script:form.ClientSize = New-Object Drawing.Size(520,674)
+$script:form.Text = 'Realtek MAC Pass-Through'; $script:form.ClientSize = New-Object Drawing.Size(520,818)
 $script:form.StartPosition = 'CenterScreen'; $script:form.BackColor = $script:T.Bg; $script:form.Font = $script:F.Sub
 $script:form.FormBorderStyle = 'FixedSingle'; $script:form.MaximizeBox = $false
 try { $script:form.Icon = New-AppIcon } catch {}
@@ -165,27 +185,33 @@ $script:form.Controls.Add($script:pill)
 $script:pillLbl = New-Object Windows.Forms.Label; $script:pillLbl.Font = $script:F.Banner; $script:pillLbl.ForeColor = $script:T.White; $script:pillLbl.TextAlign = 'MiddleLeft'
 $script:pillLbl.Location = New-Object Drawing.Point(40,0); $script:pillLbl.Size = New-Object Drawing.Size(428,46); $script:pill.Controls.Add($script:pillLbl)
 
-$card1 = New-Card 24 140 472 166 'Dock  (device)'
+# --- Analysis: the step-by-step chain that produces the verdict (why, not just what) ---
+$cardA = New-Card 24 140 472 212 'Analysis  (why this verdict)'
+Add-Step $cardA 'Dock adapter'  36 'sDock'
+Add-Step $cardA 'Dock capable'  66 'sCap'
+Add-Step $cardA 'Host feature'  96 'sFeat'
+Add-Step $cardA 'Host MAC'     126 'sMac'
+Add-Step $cardA 'Recipe'       156 'sReg'
+$scope = New-Object Windows.Forms.Label; $scope.Text = 'Scope: this tool configures the Windows (post-boot) layer. Pre-boot / PXE pass-through is a firmware feature (Dell/Lenovo) and is not set here.'; $scope.Font = $script:F.Sub; $scope.ForeColor = $script:T.Sub; $scope.Location = New-Object Drawing.Point(16,182); $scope.Size = New-Object Drawing.Size(442,30); $cardA.Controls.Add($scope)
+# --- raw facts below ---
+$card1 = New-Card 24 364 472 144 'Dock  (device)'
 Add-Row $card1 'Device'       34 'device'
 Add-Row $card1 'Connection'   56 'conn'
 Add-Row $card1 'Chip'         78 'chip' -mono
 Add-Row $card1 'Current MAC' 100 'mac' -mono
 Add-Row $card1 'Link'        122 'link'
-Add-Row $card1 'Pass-through' 144 'dock'
-$card2 = New-Card 24 318 472 84 'Host  (BIOS - ACPI DSDT)'
-Add-Row $card2 'Pass-through'     32 'host'
+$card2 = New-Card 24 520 472 84 'Host  (BIOS - ACPI DSDT)'
+Add-Row $card2 'Feature'          32 'host'
 Add-Row $card2 'Published MAC'    54 'fw' -mono
-$card3 = New-Card 24 414 472 62 'Registry'
-Add-Row $card3 'Recipe state' 32 'reg'
 
-$note = New-Object Windows.Forms.Label; $note.Text = 'After Enable / Revert: physically unplug and replug the dock  (do NOT Disable/Enable the adapter).'; $note.Font = $script:F.Sub; $note.ForeColor = $script:T.Sub; $note.Location = New-Object Drawing.Point(24,484); $note.Size = New-Object Drawing.Size(472,32); $script:form.Controls.Add($note)
+$note = New-Object Windows.Forms.Label; $note.Text = 'After Enable / Revert: physically unplug and replug the dock  (do NOT Disable/Enable the adapter).'; $note.Font = $script:F.Sub; $note.ForeColor = $script:T.Sub; $note.Location = New-Object Drawing.Point(24,618); $note.Size = New-Object Drawing.Size(472,32); $script:form.Controls.Add($note)
 
 $btnEnable  = New-Button 'Enable'  24  'primary'
 $btnRevert  = New-Button 'Revert'  186 'secondary'
 $btnRefresh = New-Button 'Refresh' 348 'secondary'
 
 $log = New-Object Windows.Forms.TextBox; $log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = 'Vertical'; $log.BorderStyle = 'FixedSingle'; $log.BackColor = $script:T.Surface; $log.ForeColor = $script:T.Sub; $log.Font = $script:F.Mono
-$log.Location = New-Object Drawing.Point(24,570); $log.Size = New-Object Drawing.Size(472,80); $script:form.Controls.Add($log)
+$log.Location = New-Object Drawing.Point(24,714); $log.Size = New-Object Drawing.Size(472,86); $script:form.Controls.Add($log)
 function Write-Log([string]$m) { $log.AppendText(('{0}  {1}{2}' -f (Get-Date -Format HH:mm:ss), $m, "`r`n")) }
 
 # ----------------------------------------------------------------------------
@@ -193,44 +219,54 @@ function Write-Log([string]$m) { $log.AppendText(('{0}  {1}{2}' -f (Get-Date -Fo
 # ----------------------------------------------------------------------------
 $script:state = @{ adapter = $null; key = $null; fw = $null; supported = $false }
 function Set-Pill([string]$text,[Drawing.Color]$color) { $script:pill.BackColor = $color; $script:pillLbl.Text = $text; $script:pill.Invalidate() }
+function Set-StepsNotFound {
+  Set-Step 'sDock' 'no'   'no Realtek USB NIC'
+  Set-Step 'sCap'  'wait' '-'
+  Set-Step 'sFeat' 'wait' '-'
+  Set-Step 'sMac'  'wait' '-'
+  Set-Step 'sReg'  'wait' '-'
+}
 function Update-Ui {
   if ($Demo) {
     $PT = '00-11-22-33-44-55'; $OWN = 'A0-B1-C2-D3-E4-F5'
     $DEV = 'Thunderbolt 4 DisplayLink dock'; $CONN = 'Thunderbolt 4'; $CHIP = 'RTL8156B  (2.5GbE)  -  0BDA:8156 rev 3104'
     $script:UI.device.Text = $DEV; $script:UI.conn.Text = $CONN; $script:UI.chip.Text = $CHIP
+    Set-Step 'sDock' 'ok' 'RTL8156B present'; Set-Step 'sCap' 'ok' 'RTL815x - supported'
     switch ($DemoState) {
       'active-native' {
         $script:UI.device.Text = 'Thunderbolt 4 dock'; $script:UI.chip.Text = 'RTL8153D  (1GbE)  -  0BDA:8153 rev 6010'
-        $script:UI.mac.Text = $PT; $script:UI.link.Text = 'Connected  -  rtu53cx22x64'
-        $script:UI.dock.Text = 'active, native (auto-recognized)'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
+        $script:UI.mac.Text = $PT; $script:UI.link.Text = 'Connected  -  rtu53cx22x64'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT
+        Set-Step 'sDock' 'ok' 'RTL8153D present'; Set-Step 'sFeat' 'ok' 'firmware has AMAC'; Set-Step 'sMac' 'ok' 'published'; Set-Step 'sReg' 'wait' 'native - not needed'
         Set-Pill 'PASS-THROUGH ACTIVE  (native dock)' $script:T.Success }
       'ready' {
-        $script:UI.mac.Text = $OWN; $script:UI.link.Text = 'Connected  -  rtu56cx22x64'
-        $script:UI.dock.Text = 'generic - needs recipe (Enable)'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'not set   (0 / 4)'
+        $script:UI.mac.Text = $OWN; $script:UI.link.Text = 'Connected  -  rtu56cx22x64'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT
+        Set-Step 'sFeat' 'ok' 'firmware has AMAC'; Set-Step 'sMac' 'ok' 'published'; Set-Step 'sReg' 'no' 'not set - press Enable'
         Set-Pill 'READY  -  host OK, press Enable (dock needs the recipe)' $script:T.Accent }
       { $_ -in 'disabled','bios-disabled' } {
-        $script:UI.mac.Text = $OWN; $script:UI.link.Text = 'Disconnected  -  rtump64x64'
-        $script:UI.dock.Text = '- (no host MAC to pass through)'; $script:UI.host.Text = 'supported, OFF  (enable in BIOS)'; $script:UI.fw.Text = '-'; $script:UI.reg.Text = 'not set   (0 / 4)'
+        $script:UI.mac.Text = $OWN; $script:UI.link.Text = 'Connected  -  rtump64x64'; $script:UI.host.Text = 'supported, OFF  (enable in BIOS)'; $script:UI.fw.Text = '-'
+        Set-Step 'sFeat' 'ok' 'firmware has the feature'; Set-Step 'sMac' 'wait' 'OFF - enable in BIOS'; Set-Step 'sReg' 'wait' '- (no MAC yet)'
         Set-Pill 'ENABLE IN BIOS  -  host has the feature but it is OFF' $script:T.Warn }
       { $_ -in 'unsupported','nomac' } {
-        $script:UI.mac.Text = $OWN; $script:UI.link.Text = 'Disconnected  -  rtump64x64'
-        $script:UI.dock.Text = '- (no host MAC to pass through)'; $script:UI.host.Text = 'not supported by firmware'; $script:UI.fw.Text = '-'; $script:UI.reg.Text = 'not set   (0 / 4)'
+        $script:UI.mac.Text = $OWN; $script:UI.link.Text = 'Connected  -  rtump64x64'; $script:UI.host.Text = 'not supported by firmware'; $script:UI.fw.Text = '-'
+        Set-Step 'sFeat' 'no' 'no feature in firmware'; Set-Step 'sMac' 'no' 'firmware has none'; Set-Step 'sReg' 'wait' '- (N/A)'
         Set-Pill 'NO HOST PASS-THROUGH  (BIOS limitation, the dock is fine)' $script:T.Neutral }
       'notfound' {
-        foreach ($k in 'device','conn','chip','mac','link','dock','host','fw','reg') { $script:UI[$k].Text = '-' }
+        foreach ($k in 'device','conn','chip','mac','link','host','fw') { $script:UI[$k].Text = '-' }
+        Set-StepsNotFound
         $btnEnable.Enabled = $false; $btnRevert.Enabled = $false
         $btnEnable.BackColor = $script:T.SurfAlt; $btnEnable.ForeColor = $script:T.Sub; $btnRevert.ForeColor = $script:T.Sub
         Set-Pill 'DOCK NIC NOT FOUND  -  plug in the dock' $script:T.Neutral }
       default {
-        $script:UI.mac.Text = $PT; $script:UI.link.Text = 'Connected  -  rtu56cx22x64'
-        $script:UI.dock.Text = 'active, via recipe (this tool)'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT; $script:UI.reg.Text = 'ENABLED   (4 / 4 keys set)'
+        $script:UI.mac.Text = $PT; $script:UI.link.Text = 'Connected  -  rtu56cx22x64'; $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = $PT
+        Set-Step 'sFeat' 'ok' 'firmware has AMAC'; Set-Step 'sMac' 'ok' 'published'; Set-Step 'sReg' 'ok' '4 / 4 keys set'
         Set-Pill 'PASS-THROUGH ACTIVE  (via this tool)' $script:T.Success }
     }
     return
   }
   $a = Get-DockAdapter; $script:state.adapter = $a
   if (-not $a) {
-    foreach ($k in 'device','conn','chip','mac','link','dock','host','fw','reg') { $script:UI[$k].Text = '-' }
+    foreach ($k in 'device','conn','chip','mac','link','host','fw') { $script:UI[$k].Text = '-' }
+    Set-StepsNotFound
     Set-Pill 'DOCK NIC NOT FOUND  -  plug in the dock' $script:T.Neutral
     $btnEnable.Enabled = $false; $btnRevert.Enabled = $false
     $btnEnable.BackColor = $script:T.SurfAlt; $btnEnable.ForeColor = $script:T.Sub; $btnRevert.ForeColor = $script:T.Sub
@@ -242,23 +278,26 @@ function Update-Ui {
   $script:UI.device.Text = $di.Device; $script:UI.conn.Text = $di.Connection; $script:UI.chip.Text = $di.Chip
   $script:UI.mac.Text = $di.Mac; $script:UI.link.Text = $di.Link
   $dsdt = Get-DsdtInfo; $fw = $dsdt.Mac; $script:state.fw = $fw; $script:state.supported = $dsdt.Supported; $hasFw = [bool]$fw
-  # ---- HOST (firmware) axis ----
+  # ---- HOST (firmware) axis (fact rows) ----
   if ($fw)                 { $script:UI.host.Text = 'supported, ON'; $script:UI.fw.Text = (Format-Mac $fw) }
   elseif ($dsdt.Supported) { $script:UI.host.Text = 'supported, OFF  (enable in BIOS)'; $script:UI.fw.Text = '-' }
   else                     { $script:UI.host.Text = 'not supported by firmware'; $script:UI.fw.Text = '-' }
-  # ---- Registry recipe ----
+  # ---- Registry recipe state ----
   $key = Get-DockKey $a.InterfaceGuid; $script:state.key = $key
   if ($key) { $p = Get-ItemProperty $key.PSPath } else { $p = $null }
   $setN = (@($RECIPE.Keys | Where-Object { $p -and $p.$_ -eq $RECIPE[$_] })).Count
-  if ($setN -eq $RECIPE.Count) { $script:UI.reg.Text = "ENABLED   ($setN / $($RECIPE.Count) keys set)" }
-  elseif ($setN -eq 0) { $script:UI.reg.Text = "not set   (0 / $($RECIPE.Count))" }
-  else { $script:UI.reg.Text = "partial   ($setN / $($RECIPE.Count) keys)" }
-  # ---- DOCK axis ----
   $active = $hasFw -and (($a.MacAddress -replace '-','').ToUpper() -eq $fw.ToUpper())
-  if     ($active -and $setN -eq $RECIPE.Count) { $script:UI.dock.Text = 'active, via recipe (this tool)' }
-  elseif ($active)                              { $script:UI.dock.Text = 'active, native (auto-recognized)' }
-  elseif ($hasFw)                               { $script:UI.dock.Text = 'generic - needs recipe (Enable)' }
-  else                                          { $script:UI.dock.Text = '- (no host MAC to pass through)' }
+  # ---- Analysis checklist: the chain that leads to the verdict ----
+  Set-Step 'sDock' 'ok' "$($di.ChipShort) present"
+  if ($di.Capable) { Set-Step 'sCap' 'ok' 'RTL815x - supports pass-through' } else { Set-Step 'sCap' 'wait' 'unknown chip' }
+  if ($dsdt.Supported) { Set-Step 'sFeat' 'ok' 'firmware has AMAC/MACA' } else { Set-Step 'sFeat' 'no' 'no feature in firmware' }
+  if     ($fw)             { Set-Step 'sMac' 'ok' 'firmware publishes a MAC' }
+  elseif ($dsdt.Supported) { Set-Step 'sMac' 'wait' 'OFF - enable in BIOS' }
+  else                     { Set-Step 'sMac' 'no' 'firmware publishes none' }
+  if     ($setN -eq $RECIPE.Count) { Set-Step 'sReg' 'ok' "$setN / $($RECIPE.Count) keys set" }
+  elseif ($setN -gt 0)             { Set-Step 'sReg' 'wait' "$setN / $($RECIPE.Count) keys" }
+  elseif ($hasFw)                  { Set-Step 'sReg' 'no' 'not set - press Enable' }
+  else                             { Set-Step 'sReg' 'wait' '- (nothing to apply)' }
   # ---- combined verdict pill (names the bottleneck) ----
   if ($active -and $setN -eq $RECIPE.Count) { Set-Pill 'PASS-THROUGH ACTIVE  (via this tool)' $script:T.Success }
   elseif ($active) { Set-Pill 'PASS-THROUGH ACTIVE  (native dock)' $script:T.Success }
@@ -266,7 +305,7 @@ function Update-Ui {
   elseif ($dsdt.Supported) { Set-Pill 'ENABLE IN BIOS  -  host has the feature but it is OFF' $script:T.Warn }
   else { Set-Pill 'NO HOST PASS-THROUGH  (BIOS limitation, the dock is fine)' $script:T.Neutral }
 }
-$btnRefresh.Add_Click({ Update-Ui; Write-Log 'refreshed' })
+$btnRefresh.Add_Click({ $script:form.Cursor = 'WaitCursor'; try { Update-Ui; Write-Log 'refreshed' } finally { $script:form.Cursor = 'Default' } })
 $btnEnable.Add_Click({
   if (-not (Test-Admin)) { [Windows.Forms.MessageBox]::Show('Run this tool as Administrator to change settings.','Not elevated') | Out-Null; return }
   if (-not $script:state.fw) {
