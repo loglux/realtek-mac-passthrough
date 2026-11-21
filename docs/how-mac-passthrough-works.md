@@ -62,8 +62,10 @@ Where the names come from:
 - **Windows driver** (`rtump64x64`, function `NIC_QuerySpecificHwCaps`) reads `0xCFDB` and logs
   *"Is RT MAC clone support system"* when bit 0 is set and *"Is AUX MAC clone support system"* when
   bit 1 is set.
-- **Realtek's programming tool** (RTUNicPG) calls the same two bits `DOCKING` (bit 0) and `SELF_POWER`
-  (bit 1) — its configuration fields, also printed when it dumps a chip's efuse.
+- **Realtek's programming tool** (`RTUNicPG64.exe` and its `.CFG` templates) calls the same two bits
+  `DOCKING` (bit 0) and `SELF_POWER` (bit 1) — its configuration fields, also printed when it dumps a
+  chip's efuse. (Realtek's diagnostic DLLs contain none of these names; they only read and write
+  registers by number.)
 - **Linux driver** ([`drivers/net/usb/r8152.c`](https://github.com/torvalds/linux/blob/master/drivers/net/usb/r8152.c))
   defines `EFUSE 0xcfdb` and `PASS_THRU_MASK 0x1`, and `AD_MASK 0xfee0`, `BND_MASK 0x0004`,
   `BD_MASK 0x0001` for the `USB_MISC` checks; its comments name the variants `RTL8153-AD`,

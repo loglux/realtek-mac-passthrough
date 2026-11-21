@@ -38,8 +38,8 @@ dock's Realtek chip — and **each system requires different values:**
 | `USB_MISC_1` (`0xD81F`, 1 byte) | bit 2, bit 0 | either = 1 | not used | not used | … this | RTL8153-BND / -BD ³ |
 
 Names: ¹ Windows Realtek driver — its log messages *"Is AUX / RT MAC clone support system"*
-(`rtump64x64`, `NIC_QuerySpecificHwCaps`); ² Realtek's programming tool (RTUNicPG) — its
-configuration fields; ³ Linux driver `drivers/net/usb/r8152.c` — its defines and comments. The chip
+(`rtump64x64.sys`, `NIC_QuerySpecificHwCaps`); ² Realtek's programming tool (`RTUNicPG64.exe` and its
+`.CFG` templates) — its configuration fields; ³ Linux driver `drivers/net/usb/r8152.c` — its defines and comments. The chip
 itself holds only the numbers.
 
 ### The `0xCFDB` byte
