@@ -21,7 +21,7 @@ from storage import flash_name, has_flash
 NAMES = {0xC000: "MAC address", 0xCFDB: "SW_FEATURE - MAC clone / pass-through bits",
          0xD81A: "USB_MISC_0 - chip variant (AD marker)", 0xD81F: "USB_MISC_1 - chip variant (BD/BND)"}
 EFUSE_BYTES = 256   # the whole efuse: a burned record sits past 0x80 (e.g. 0x080 on a burned RTL8156)
-EFUSE8153_BYTES = 192   # the user efuse RTUNicPG reads on an RTL8153B
+EFUSE8153_BYTES = 192   # the user efuse of an RTL8153B
 FLASH_BYTES = 256       # only the start of the flash is shown (header of the driver install disk)
 
 

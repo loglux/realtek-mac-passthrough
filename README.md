@@ -38,8 +38,7 @@ dock's Realtek chip — and **each system requires different values:**
 | `USB_MISC_1` (`0xD81F`, 1 byte) | bit 2, bit 0 | either = 1 | not used | not used | … this | RTL8153-BND / -BD ³ |
 
 Names: ¹ Windows Realtek driver — its log messages *"Is AUX / RT MAC clone support system"*
-(`rtump64x64.sys`, `NIC_QuerySpecificHwCaps`); ² Realtek's programming tool (`RTUNicPG64.exe` and its
-`.CFG` templates) — its configuration fields; ³ Linux driver `drivers/net/usb/r8152.c` — its defines and comments. The chip
+(`rtump64x64.sys`, `NIC_QuerySpecificHwCaps`); ² Realtek — its configuration fields; ³ Linux driver `drivers/net/usb/r8152.c` — its defines and comments. The chip
 itself holds only the numbers.
 
 ### The `0xCFDB` byte
@@ -51,9 +50,9 @@ for pass-through:
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | Windows driver | — | — | — | — | — | — | AUX MAC clone | RT MAC clone |
-| Realtek PG tool | — | — | — | — | — | — | `SELF_POWER` | `DOCKING` |
+| Realtek | — | — | — | — | — | — | `SELF_POWER` | `DOCKING` |
 | Linux driver | — | — | — | — | — | — | — | `PASS_THRU` |
-| **set to enable pass-through** | — | — | — | — | — | — | **1** | **1** |
+| **required value** | — | — | — | — | — | — | **1** | **1** |
 
 Bit 1 is what Windows and pre-boot need, bit 0 what Linux needs on `-AD` chips; the other bits are
 not checked. RtlPassthru sets both — `0x03`.

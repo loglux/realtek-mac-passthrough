@@ -3,7 +3,7 @@ import storage
 
 
 def test_ugreen_flash_is_the_driver_disk_not_settings():
-    # UGREEN RTL8153: JEDEC ID 85 60 15 (also confirmed by Realtek's own PG tool) = PUYA P25Q16H, 2 MB.
+    # UGREEN RTL8153: JEDEC ID 85 60 15 (also confirmed by Realtek's own tooling) = PUYA P25Q16H, 2 MB.
     # Its flash holds the driver auto-install ISO; settings come from efuse (RTL8153 datasheet 6.4).
     assert storage.has_flash(bytes([0x85, 0x60, 0x15]))
     s = storage.describe(bytes([0x85, 0x60, 0x15]))

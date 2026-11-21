@@ -41,9 +41,9 @@ third column are what the drivers call those values — nothing is written in th
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | Windows driver | — | — | — | — | — | — | AUX MAC clone | RT MAC clone |
-| Realtek PG tool | — | — | — | — | — | — | `SELF_POWER` | `DOCKING` |
+| Realtek | — | — | — | — | — | — | `SELF_POWER` | `DOCKING` |
 | Linux driver | — | — | — | — | — | — | — | `PASS_THRU` |
-| **set to enable pass-through** | — | — | — | — | — | — | **1** | **1** |
+| **required value** | — | — | — | — | — | — | **1** | **1** |
 
 Bit 1 is what Windows and pre-boot need, bit 0 what Linux needs on `-AD` chips; the other bits are
 not checked. RtlPassthru sets both — `0x03`.
@@ -62,9 +62,8 @@ Where the names come from:
 - **Windows driver** (`rtump64x64`, function `NIC_QuerySpecificHwCaps`) reads `0xCFDB` and logs
   *"Is RT MAC clone support system"* when bit 0 is set and *"Is AUX MAC clone support system"* when
   bit 1 is set.
-- **Realtek's programming tool** (`RTUNicPG64.exe` and its `.CFG` templates) calls the same two bits
-  `DOCKING` (bit 0) and `SELF_POWER` (bit 1) — its configuration fields, also printed when it dumps a
-  chip's efuse. (Realtek's diagnostic DLLs contain none of these names; they only read and write
+- **Realtek** calls the same two bits `DOCKING` (bit 0) and `SELF_POWER` (bit 1) in its own
+  configuration fields. (Realtek's diagnostic DLLs contain none of these names; they only read and write
   registers by number.)
 - **Linux driver** ([`drivers/net/usb/r8152.c`](https://github.com/torvalds/linux/blob/master/drivers/net/usb/r8152.c))
   defines `EFUSE 0xcfdb` and `PASS_THRU_MASK 0x1`, and `AD_MASK 0xfee0`, `BND_MASK 0x0004`,
