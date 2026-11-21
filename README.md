@@ -42,12 +42,22 @@ Names: ¹ Windows Realtek driver — its log messages *"Is AUX / RT MAC clone su
 configuration fields; ³ Linux driver `drivers/net/usb/r8152.c` — its defines and comments. The chip
 itself holds only the numbers.
 
-`0xCFDB` bit by bit — the values we read:
+### The `0xCFDB` byte
 
-| `0xCFDB` | bits 7–2 | bit 1 | bit 0 |
-|---|:---:|:---:|:---:|
-| `0x01` — WAVLINK dock and RTL8156 dongle, as shipped | 0 | 0 | 1 |
-| `0x03` — after RtlPassthru | 0 | **1** | 1 |
+`0xCFDB` is one byte — eight bits, numbered 7 to 0. Only the two lowest matter for pass-through:
+
+| bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| value of the bit | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
+| meaning | — | — | — | — | — | — | **AUX MAC clone** | **RT MAC clone** |
+
+So the byte's value tells you which of the two are set — what we read on real cards:
+
+| card | `0xCFDB` | in bits | bit 1 | bit 0 | Windows and pre-boot |
+|---|:---:|:---:|:---:|:---:|:---:|
+| WAVLINK dock, RTL8156 dongle — as shipped | `0x01` | `0000 0001` | 0 | 1 | ✗ |
+| UGREEN adapter (RTL8153) — as shipped | `0x03` | `0000 0011` | 1 | 1 | ✓ |
+| WAVLINK dock, RTL8156 dongle — after RtlPassthru | `0x03` | `0000 0011` | **1** | 1 | ✓ |
 
 - `0xCFDB` is filled at every power-on: the chip's built-in default, then any setting records in its
   efuse on top. The `USB_MISC` registers are set at the factory.

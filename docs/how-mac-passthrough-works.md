@@ -35,12 +35,20 @@ third column are what the drivers call those values — nothing is written in th
 | `USB_MISC_0` (`0xD81A`, 16 bit) | bits 15–9 and 7–5 (mask `0xFEE0`) | `0x1000`: bit 12 = 1, the rest 0 | **RTL8153-AD** *(Linux driver)* |
 | `USB_MISC_1` (`0xD81F`, 1 byte) | bit 2 / bit 0 | 1 | **RTL8153-BND** / **RTL8153-BD** *(Linux driver)* |
 
-`0xCFDB` bit by bit — the values we read:
+`0xCFDB` is one byte; only its two lowest bits matter here:
 
-| `0xCFDB` | bits 7–2 | bit 1 | bit 0 |
-|---|:---:|:---:|:---:|
-| `0x01` — WAVLINK dock and RTL8156 dongle, as shipped | 0 | 0 | 1 |
-| `0x03` — after RtlPassthru | 0 | **1** | 1 |
+| bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| value of the bit | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
+| meaning | — | — | — | — | — | — | **AUX MAC clone** | **RT MAC clone** |
+
+What we read on real cards:
+
+| card | `0xCFDB` | in bits | bit 1 | bit 0 |
+|---|:---:|:---:|:---:|:---:|
+| WAVLINK dock, RTL8156 dongle — as shipped | `0x01` | `0000 0001` | 0 | 1 |
+| UGREEN adapter (RTL8153) — as shipped | `0x03` | `0000 0011` | 1 | 1 |
+| WAVLINK dock, RTL8156 dongle — after RtlPassthru | `0x03` | `0000 0011` | **1** | 1 |
 
 Where the values come from:
 
