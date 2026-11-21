@@ -2,8 +2,11 @@
 
 Usage:
   python -I efuse.py {GUID} [N] [--dll new|old|auto]           dump N bytes (default 128) + decoded records
-  python -I efuse.py {GUID} --plan [--aux-only] [--dll ...]    dry run: show where/what would be written
-  python -I efuse.py {GUID} --burn [--aux-only] [--dll ...]    OTP write 0xCFDB=0x03 (0x02 with --aux-only), verify
+  python -I efuse.py {GUID} --plan [--dll ...]    dry run: show where/what would be written
+  python -I efuse.py {GUID} --burn [--dll ...]    OTP write 0xCFDB=0x03 (both clone bits), verify
+
+Always 0x03, like a chip that ships enabled: Windows needs the AUX bit (bit1), Linux on -AD chips also
+needs bit0, and pre-boot was verified with 0x03 only. (The old --aux-only / 0x02 option was removed.)
 
 The burn appends a 4-byte record to the trailing 0xFF run (end of autoload); factory data is untouched.
 Only ever writes into confirmed-free (0xFFFFFFFF) space. The output format is stable - the GUI parses it.
@@ -54,11 +57,15 @@ def _plan(c, value):
 
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
-        print("usage: efuse.py {GUID} [N] [--plan|--burn] [--aux-only] [--dll new|old|auto]")
+        print("usage: efuse.py {GUID} [N] [--plan|--burn] [--dll new|old|auto]")
+        return 2
+    if "--aux-only" in argv:
+        print("ERROR: --aux-only was removed. 0x02 turns Linux pass-through off on -AD chips and was never "
+              "tested at pre-boot; RtlPassthru always writes 0x03.")
         return 2
     guid = argv[0]
     dll = argv[argv.index("--dll") + 1] if "--dll" in argv else "auto"
-    value = 0x02 if "--aux-only" in argv else 0x03
+    value = 0x03
     do_burn = "--burn" in argv
     do_plan = do_burn or "--plan" in argv
     nbytes = 128

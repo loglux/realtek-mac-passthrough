@@ -1,7 +1,8 @@
 """Read a Realtek USB card's plain registers (USB-OCP) via the diag DLL. Read-only.
 
-Usage:  python -I diag.py {InterfaceGUID} [--dll new|old|auto]
-Prints bcdDevice(REV), USB_MISC_0/1 and 0xCFDB with its RT/AUX clone bits. Register reads use
+Usage:  python -I diag.py {InterfaceGUID} [--dll new|old|auto] [--vid 0BDA]
+Prints bcdDevice(REV), USB_MISC_0/1 and 0xCFDB with its RT/AUX clone bits, then the chip variant and a
+per-layer pass-through verdict (Windows / PXE / Linux, see passthru.py). Register reads use
 USBDirectRead (reliable, no off-by-one). The output format is stable - the GUI parses it by regex.
 """
 import os
@@ -10,6 +11,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
 from rtldiag import RtlDiag
+from passthru import format_lines, verdict
 
 
 def main(argv):
@@ -18,6 +20,7 @@ def main(argv):
         return 2
     guid = argv[0]
     dll = argv[argv.index("--dll") + 1] if "--dll" in argv else "auto"
+    vid = int(argv[argv.index("--vid") + 1], 16) if "--vid" in argv else 0x0BDA
     c = RtlDiag(guid, dll).open()
     try:
         rev = c.read_bcd() or 0
@@ -30,6 +33,8 @@ def main(argv):
         print(f"  0xD81A USB_MISC_0 = 0x{m0:04X}")
         print(f"  0xD81F USB_MISC_1 = 0x{m1:02X}")
         print(f"  0xCFDB EFUSE(PASS_THRU) = 0x{cfdb:02X}   bit0(RT-clone)={cfdb & 1}  bit1(AUX-clone)={(cfdb >> 1) & 1}")
+        for line in format_lines(verdict(m0, m1, cfdb, vid)):
+            print(line)
     finally:
         c.close()
     return 0

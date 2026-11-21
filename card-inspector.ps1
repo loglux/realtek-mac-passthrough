@@ -50,15 +50,24 @@ function Demo-Py($script, $argline) {
   switch -Wildcard ($script) {
     'dll_list.py' { return "new`t216`tok`t5.0.0.2`tdll\new\RtlDirectDiagLib64.dll" }
     'diag.py' {
+      # demo chip = an -AD variant (like the WAVLINK RTL8156): green = burned 0x03, red = blank 0x00
       $cf = if ($green) { '0x03' } else { '0x00' }
       $b0 = if ($green) { 1 } else { 0 }; $b1 = $b0
+      $yn = if ($green) { 'YES' } else { 'NO ' }
+      $aux = if ($green) { 'AUX-clone bit (0xCFDB bit1) is set' } else { 'AUX-clone bit (0xCFDB bit1) is not set' }
+      $lin = if ($green) { 'RTL8153-AD variant, and 0xCFDB bit0 is set' } else { 'RTL8153-AD variant, but 0xCFDB bit0 is not set' }
+      $pxe = if ($green) { 'both clone bits set - 0x03 verified at pre-boot on a Dell' } else { $aux }
       return (@(
         "GUID (demo)",
         "DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
         "bcdDevice(REV) = 0x3000",
-        "  0xD81A USB_MISC_0 = 0x0000",
+        "  0xD81A USB_MISC_0 = 0x1000",
         "  0xD81F USB_MISC_1 = 0x00",
-        ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={2}" -f $cf,$b0,$b1)
+        ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={2}" -f $cf,$b0,$b1),
+        "  chip variant (r8152) = AD",
+        ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),
+        ("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),
+        ("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin)
       ) -join "`r`n")
     }
     'efuse.py' {
@@ -129,7 +138,6 @@ function Set-Status($text,$color) {
 
 function Set-FixEnabled([bool]$red) {
   $btnDry.Enabled = $red
-  if (-not $red) { $rb03.Checked = $true }
   $btnBurn.Enabled = $red
   Style-Burn
 }
@@ -150,9 +158,9 @@ function Sel-Dll {
 }
 function Burn-Dll     { Sel-Dll }
 function Burn-Backend { switch (Sel-Dll) { 'new' {'Direct_API DLL'} 'old' {'API DLL'} 'auto' {'DLL'} default {'custom DLL'} } }
-function Aux-Flag     { if ($rb02.Checked) { ' --aux-only' } else { '' } }
-function Record-Hex   { if ($rb02.Checked) { '40 CF DB 02' } else { '40 CF DB 03' } }
-function Target-Hex   { if ($rb02.Checked) { '0x02' } else { '0x03' } }
+# always 0x03 (both clone bits, like a chip that ships enabled): 0x02 would turn Linux off on -AD chips
+function Record-Hex   { '40 CF DB 03' }
+function Target-Hex   { '0x03' }
 
 $form = New-Object Windows.Forms.Form
 $form.Text = "RtlPassthru $Version"; $form.Size = '788,860'; $form.StartPosition='CenterScreen'
@@ -253,17 +261,15 @@ $form.Controls.AddRange(@($btnEf,$btnSave))
 $grpFix = New-Object Windows.Forms.GroupBox
 $grpFix.Text = 'Permanent fix  -  burn the AUX bit into efuse  (OTP, one-time, IRREVERSIBLE)'
 $grpFix.Location='16,534'; $grpFix.Size='738,88'; $grpFix.ForeColor=$C_TEXT
-# row A: what value to write
-$lblVal = New-Object Windows.Forms.Label; $lblVal.Text='Value to write:'; $lblVal.Location='12,26'; $lblVal.AutoSize=$true; $lblVal.ForeColor=$C_TEXT
-$rb03 = New-Object Windows.Forms.RadioButton; $rb03.Text='0x03  -  AUX + RT  (recommended)'; $rb03.Location='112,24'; $rb03.AutoSize=$true; $rb03.Checked=$true
-$rb02 = New-Object Windows.Forms.RadioButton; $rb02.Text='0x02  -  AUX only  (experimental)'; $rb02.Location='372,24'; $rb02.AutoSize=$true
+# row A: what gets written (fixed - no choice to get wrong on an irreversible burn)
+$lblVal = New-Object Windows.Forms.Label; $lblVal.Text='Writes 0xCFDB = 0x03  (AUX + RT, as on a chip that ships enabled - Windows, pre-boot, and Linux on -AD chips)'; $lblVal.Location='12,26'; $lblVal.AutoSize=$true; $lblVal.ForeColor=$C_TEXT
 # row B: the two steps
 $btnDry = New-Object Windows.Forms.Button; $btnDry.Text='1.  Dry run (no burn)'; $btnDry.Location='12,54'; $btnDry.Size='180,26'
 Style-Btn $btnDry $false
 $btnBurn = New-Object Windows.Forms.Button; $btnBurn.Text='2.  Burn AUX bit'; $btnBurn.Location='556,54'; $btnBurn.Size='170,26'
 $btnBurn.FlatStyle='Flat'; $btnBurn.Font=$F_BTN; $btnBurn.Cursor='Hand'; $btnBurn.FlatAppearance.BorderSize=1
 $btnDry.Enabled=$false; $btnBurn.Enabled=$false
-$grpFix.Controls.AddRange(@($lblVal,$rb03,$rb02,$btnDry,$btnBurn))
+$grpFix.Controls.AddRange(@($lblVal,$btnDry,$btnBurn))
 $form.Controls.Add($grpFix)
 
 $ef = New-Object Windows.Forms.TextBox
@@ -351,8 +357,21 @@ function Read-Card {
     $grid.Text = $dr; $script:rpt=$null; Set-FixEnabled $false; Set-Status 'Read failed - run as admin and check the card is connected.' $C_AMBER; return
   }
   $bit0 = $cf -band 1; $bit1 = ($cf -shr 1) -band 1
-  $pass = ($bit1 -eq 1)
-  $banner.Text = if ($pass) {'SUPPORTS MAC PASS-THROUGH'} else {'NOT SUPPORTED  -  AUX clone bit missing (needs burn)'}
+  $pass = ($bit1 -eq 1)        # Windows / PXE gate = the AUX bit, the one thing this tool can fix
+
+  # per-layer verdict from diag.py (passthru.py): each layer checks a different marker
+  $variant = ([regex]::Match($dr,'chip variant \(r8152\)\s*=\s*(\S+)')).Groups[1].Value
+  $layers = [ordered]@{}
+  foreach ($mm in [regex]::Matches($dr,'PASSTHRU\s+(\w+)\s*=\s*(YES|NO|\?)\s+\((.*)\)')) {
+    $v = $mm.Groups[2].Value          # YES / NO / ? (not measured)
+    $layers[$mm.Groups[1].Value] = @{ Ok = ($v -eq 'YES'); Val = $v; Why = $mm.Groups[3].Value }
+  }
+  $lin = if ($layers.Contains('Linux')) { $layers['Linux'].Ok } else { $false }
+  $vtxt = switch ($variant) { 'AD' {'RTL8153-AD'} 'BND' {'RTL8153-BND'} 'BD' {'RTL8153-BD'} 'Lenovo' {'Lenovo chip'} default {'none (a plain chip)'} }
+
+  $banner.Text = if ($pass -and $lin) {'SUPPORTS MAC PASS-THROUGH  -  Windows, PXE and Linux'}
+                 elseif ($pass)       {'SUPPORTS MAC PASS-THROUGH  -  Windows and PXE (not Linux)'}
+                 else                 {'NOT SUPPORTED on Windows / PXE  -  AUX clone bit missing (needs burn)'}
   $banner.BackColor = if ($pass) {$C_GREEN} else {$C_RED}
   $banner.ForeColor = [Drawing.Color]::White
 
@@ -360,6 +379,20 @@ function Read-Card {
   # --- plain-language headline ---
   if ($pass) { Add-Txt $grid "This dock CAN take your laptop's network identity (MAC).`r`n`r`n" $C_GREEN $true 13 $false }
   else       { Add-Txt $grid "This dock CANNOT do it yet - it needs a one-time fix.`r`n`r`n"     $C_RED   $true 13 $false }
+
+  # --- the summary first: one line per layer ---
+  if ($layers.Count -gt 0) {
+    Add-Txt $grid "PASS-THROUGH BY SYSTEM`r`n" $C_ACCENT $true 10.5 $false
+    Add-Txt $grid "  each layer checks a different marker on the card`r`n" $C_MUTED $false 9 $false
+    foreach ($k in @('Windows','PXE','Linux')) {
+      if (-not $layers.Contains($k)) { continue }
+      $L = $layers[$k]
+      $label = if ($k -eq 'PXE') {'Pre-boot/PXE'} else {$k}
+      $col = switch ($L.Val) { 'YES' {$C_GREEN} '?' {$C_AMBER} default {$C_RED} }
+      Add-Txt $grid ("  {0,-13}{1,-5}{2}`r`n" -f $label, $L.Val, $L.Why) $col $true 10 $true
+    }
+    Add-Txt $grid "`r`n" $C_TEXT $false 6 $false
+  }
 
   # --- device ---
   Add-Txt $grid "DEVICE`r`n" $C_ACCENT $true 10.5 $false
@@ -372,26 +405,37 @@ function Read-Card {
   Add-Txt $grid "CAPABILITY  -  register 0xCFDB`r`n" $C_ACCENT $true 10.5 $false
   Add-Txt $grid "  the chip's MAC-clone capability byte, loaded from efuse at every power-on`r`n" $C_MUTED $false 9 $false
   Add-Txt $grid ("  0xCFDB = {0}`r`n" -f $cfdb) $C_TEXT $false 10 $true
-  Add-Txt $grid ("  bit0  RT-clone  = {0}   Realtek's own MAC-clone mode`r`n" -f $bit0) $C_TEXT $false 10 $true
+  Add-Txt $grid ("  bit0  RT-clone  = {0}   Realtek's own clone mode; also the bit Linux checks on -AD chips`r`n" -f $bit0) $C_TEXT $false 10 $true
   if ($pass) { Add-Txt $grid ("  bit1  AUX-clone = {0}   standard firmware pass-through  <= THIS is the one that matters`r`n" -f $bit1) $C_GREEN $true 10 $true }
   else       { Add-Txt $grid ("  bit1  AUX-clone = {0}   standard firmware pass-through  <= MISSING (this is why it fails)`r`n" -f $bit1) $C_RED   $true 10 $true }
-  $concl = if ($pass) {'  => AUX-clone is SET: the dock takes the host (laptop) MAC automatically.'} `
-                 else {'  => AUX-clone is NOT set: the dock keeps its own MAC; pass-through will not work.'}
+  $concl = if ($pass) {'  => AUX-clone is SET: Windows and pre-boot take the host (laptop) MAC automatically.'} `
+                 else {'  => AUX-clone is NOT set: Windows and pre-boot keep the dock''s own MAC.'}
   Add-Txt $grid ($concl + "`r`n`r`n") $C_TEXT $false 10 $true
 
-  Add-Txt $grid ("  USB_MISC_0 = {0}    USB_MISC_1 = {1}    (chip variant markers; not the gate on this path)`r`n`r`n" -f $m0,$m1) $C_MUTED $false 9.5 $true
+  # --- the second marker: chip variant (what Linux checks) ---
+  Add-Txt $grid "CHIP VARIANT  -  what Linux (r8152) checks`r`n" $C_ACCENT $true 10.5 $false
+  Add-Txt $grid "  set at the factory in the USB_MISC registers - a different marker from 0xCFDB`r`n" $C_MUTED $false 9 $false
+  Add-Txt $grid ("  USB_MISC_0 = {0}    USB_MISC_1 = {1}`r`n" -f $m0,$m1) $C_TEXT $false 10 $true
+  $vcol = if ($variant -and $variant -ne 'none') {$C_GREEN} else {$C_TEXT}
+  Add-Txt $grid ("  variant    = {0}`r`n`r`n" -f $vtxt) $vcol $true 10 $true
 
   # --- verdict / what to do ---
   Add-Txt $grid "VERDICT`r`n" $C_ACCENT $true 10.5 $false
-  if ($pass) {
-    Add-Txt $grid "  SUPPORTS MAC pass-through - no action needed.`r`n" $C_GREEN $true 10.5 $false
-    Add-Txt $grid "  Works on hosts with BIOS MAC Pass-Through, and in pre-boot / PXE." $C_TEXT $false 10 $false
+  if ($pass -and $lin) {
+    Add-Txt $grid "  SUPPORTS MAC pass-through on Windows, pre-boot/PXE and Linux - no action needed." $C_GREEN $true 10.5 $false
+  } elseif ($pass) {
+    Add-Txt $grid "  SUPPORTS MAC pass-through on Windows and pre-boot/PXE - no action needed there.`r`n" $C_GREEN $true 10.5 $false
+    Add-Txt $grid "  Linux: r8152 only accepts factory chip variants (-AD / -BND / -BD / Lenovo). This chip is not one of them, and that marker is set at the factory - the burn here cannot add it." $C_TEXT $false 10 $false
   } else {
-    Add-Txt $grid "  NOT supported - the AUX-clone bit is not set in the chip.`r`n" $C_RED $true 10.5 $false
+    Add-Txt $grid "  NOT supported on Windows / pre-boot - the AUX-clone bit is not set in the chip.`r`n" $C_RED $true 10.5 $false
     Add-Txt $grid "  To fix permanently: burn the AUX-clone bit with the 'Permanent fix' box below (one-time, IRREVERSIBLE)." $C_TEXT $false 10 $false
+    if ($variant -eq 'AD') {
+      Add-Txt $grid "`r`n  This is an -AD chip: the burn writes 0x03 (both bits), so Linux will accept it too." $C_TEXT $false 10 $false
+    }
   }
 
-  $script:rpt = [ordered]@{ Desc=$c.Desc; Name=$c.Name; Mac=$c.Mac; Chip=(Chip-Name $c.Pid); Rev=$rev; Cfdb=$cfdb; Bit0=$bit0; Bit1=$bit1; M0=$m0; M1=$m1; Pass=$pass; Guid=$c.Guid }
+  $lay = ($layers.Keys | ForEach-Object { '{0}={1}' -f $_, $layers[$_].Val }) -join '  '
+  $script:rpt = [ordered]@{ Desc=$c.Desc; Name=$c.Name; Mac=$c.Mac; Chip=(Chip-Name $c.Pid); Rev=$rev; Cfdb=$cfdb; Bit0=$bit0; Bit1=$bit1; M0=$m0; M1=$m1; Pass=$pass; Guid=$c.Guid; Variant=$vtxt; Layers=$lay }
   Set-FixEnabled (-not $pass)
   if ($pass) { Set-Status ("Read OK: 0xCFDB=$cfdb - pass-through supported, nothing to do.") $C_GREEN }
   else       { Set-Status ("Read OK: 0xCFDB=$cfdb - pass-through OFF. Use the 'Permanent fix' area below to burn the AUX bit.") $C_RED }
@@ -427,9 +471,11 @@ MAC        : $($r.Mac)
 Chip       : $($r.Chip), rev $($r.Rev)
 
 0xCFDB     = $($r.Cfdb)
-  bit0 RT-clone  = $($r.Bit0)   (Realtek's own clone mode; not used by the Dell path)
-  bit1 AUX-clone = $($r.Bit1)   (standard _AUXMAC_ pass-through; THIS is the one that matters)
+  bit0 RT-clone  = $($r.Bit0)   (Realtek's own clone mode; also the bit Linux checks on -AD chips)
+  bit1 AUX-clone = $($r.Bit1)   (standard _AUXMAC_ pass-through; what Windows and pre-boot check)
 USB_MISC_0 = $($r.M0)    USB_MISC_1 = $($r.M1)
+CHIP VARIANT (r8152) : $($r.Variant)
+PASS-THROUGH         : $($r.Layers)
 
 VERDICT    : $verdict
 
@@ -454,7 +500,7 @@ function Dry-Run {
   if (-not $script:rpt -or $script:rpt.Pass) { return }
   $r = $script:rpt
   Set-Status ("Dry run via {0} - reading efuse, locating the free slot (nothing is written)..." -f (Burn-Backend)) $C_TEXT
-  $dry = Run-Py 'efuse.py' "`"$($r.Guid)`" --plan --dll $(Burn-Dll)$(Aux-Flag)"
+  $dry = Run-Py 'efuse.py' "`"$($r.Guid)`" --plan --dll $(Burn-Dll)"
   $cur = ([regex]::Match($dry,'@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})')).Groups[1].Value
   $dwd = ([regex]::Match($dry,'@0x[0-9A-Fa-f]+: (0x[0-9A-Fa-f]{8})')).Groups[1].Value
   $rng = ([regex]::Match($dry,'(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ =')).Groups[1].Value
@@ -482,7 +528,7 @@ function Burn-Card {
 
   # re-check the free slot right before burning
   Set-Status 'Checking the free slot before burn...' $C_TEXT
-  $dry = Run-Py 'efuse.py' "`"$($r.Guid)`" --plan --dll $(Burn-Dll)$(Aux-Flag)"
+  $dry = Run-Py 'efuse.py' "`"$($r.Guid)`" --plan --dll $(Burn-Dll)"
   $cur = ([regex]::Match($dry,'@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})')).Groups[1].Value
   $dwd = ([regex]::Match($dry,'@0x[0-9A-Fa-f]+: (0x[0-9A-Fa-f]{8})')).Groups[1].Value
   $rng = ([regex]::Match($dry,'(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ =')).Groups[1].Value
@@ -509,7 +555,7 @@ function Burn-Card {
   $btnDry.Enabled=$false; $btnBurn.Enabled=$false; Style-Burn
   $btnRead.Enabled=$false; $btnRefresh.Enabled=$false; $btnSave.Enabled=$false
   Set-Status ("BURNING via {0} - do NOT unplug the card..." -f (Burn-Backend)) $C_RED
-  $out = Run-Py 'efuse.py' "`"$($r.Guid)`" --burn --dll $(Burn-Dll)$(Aux-Flag)"
+  $out = Run-Py 'efuse.py' "`"$($r.Guid)`" --burn --dll $(Burn-Dll)"
   $btnRead.Enabled=$true; $btnRefresh.Enabled=$true; $btnSave.Enabled=$true
   $ef.Visible=$true
   $back = ([regex]::Match($out,'read-back @0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})')).Groups[1].Value

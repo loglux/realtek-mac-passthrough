@@ -40,13 +40,14 @@ What decides it is **which switch is on, not how big the number looks:**
 |:---:|:---:|:---:|---|
 | `0x00` | off | ✗ | blank chip |
 | `0x01` | off | ✗ | **RT-clone only — what an unsupported dock ships with** |
-| `0x02` | on  | ✓ | AUX only |
+| `0x02` | on  | partly | AUX only — Windows yes; Linux no on `-AD` chips; pre-boot untested |
 | `0x03` | on  | ✓ | both switches — **what RtlPassthru writes** |
 
 So an unsupported dock usually reads **`0x01`**: a clone bit *is* set, which makes it look capable —
 but it's the **wrong** switch (RT instead of AUX), and pass-through silently never happens. Turning
-the AUX switch on — `0x02`, or `0x03` to keep both — is the whole fix. *(The exact driver logic is in
-the [deep dive](#deep-dive).)*
+the AUX switch on is the whole fix — and RtlPassthru writes **`0x03`**, both switches, exactly like a
+dock that ships enabled: Linux on `-AD` chips needs the RT bit too, and pre-boot was verified with
+`0x03`. *(The exact driver logic is in the [deep dive](#deep-dive).)*
 
 **Why it's a "burn".** `0xCFDB` lives in the chip's **efuse** — a one-time-programmable (OTP) memory:
 each bit can be set once and never cleared. RtlPassthru doesn't edit the existing value; it **appends
@@ -232,4 +233,4 @@ python -I tools/dll_list.py                         # list / classify the Realte
 ```
 
 Get the adapter's GUID with `(Get-NetAdapter).InterfaceGuid`. Add `--dll new|old|auto` to pick a
-specific library, or `--aux-only` to burn `0x02` instead of `0x03`.
+specific library.
