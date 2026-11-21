@@ -93,7 +93,7 @@ def flash_append_point(data: bytes) -> int:
     return last["at"] + last["size"]
 
 
-# Record kinds by the top 3 bits of the first byte - as Realtek's own tooling classifies them:
+# Record kinds by the top 3 bits of the first byte - the classifier in RTUNicPG (FUN_14005eba0):
 #   0x20 / 0x40  register write: [hdr][reg 2B BE][data], data length (hdr & 0x1F) + 1   (PLA / USB space)
 #   0xE0         DASH register write: [hdr][reg 4B BE][data], length (hdr & 0x0F) + 1
 #   0x60 / 0x80 / 0xA0   other autoload commands of a fixed size (4 / 5 / 2 bytes) - not decoded here

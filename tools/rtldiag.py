@@ -42,6 +42,7 @@ def _candidate_dirs():
             if os.path.isdir(p):
                 dirs.append(p)
     dirs.append(os.path.join(_REPO, "downloads", "diag-tool"))                       # dev fallback
+    dirs.append(os.path.join(_REPO, "downloads", "pgtool-win", "run", "x64"))        # dev fallback
     out = []
     for d in dirs:
         ad = os.path.abspath(d)
@@ -296,7 +297,7 @@ class RtlDiag:
         return rev.value & 0xffff
 
     # --- SPI flash identification (read-only: JEDEC ID, command 0x9F) ---
-    # Bit-banged through PLA register 0xE81D exactly as Realtek's own tooling does (FlashChipSelect / FlashSetCommand):
+    # Bit-banged through PLA register 0xE81D exactly as RTUNicPG does (FlashChipSelect / FlashSetCommand):
     # 0x80 = select, 0xC0 = deselect, data-in bit = 0x10, clock low/high = 0x80/0xA0, data-out = bit3.
     # The two interface-enable registers are put back as they were afterwards.
     def _rb(self, reg):
@@ -351,7 +352,7 @@ class RtlDiag:
         dc00 = self._rb(0xDC00)
         return dc00, self._flash_session(lambda: self._spi(0x9F, 3))
 
-    # --- SPI flash writes: the same sequence Realtek's own tooling uses (FlashWritePage / FlashErase) ---
+    # --- SPI flash writes: the same sequence RTUNicPG uses (FlashWritePage / FlashErase) ---
     def _flash_wait(self, polls=20000):
         for _ in range(polls):
             s = self._spi(0x05, 1)[0]
@@ -408,7 +409,7 @@ class RtlDiag:
         v = self.dread(0xE85B, 1)[0]
         self.dwrite(0xE85B, 1, bytes([v & 0x3B]))
 
-    # Two efuse protocols (Realtek's own tooling branches on the chip family):
+    # Two efuse protocols (RTUNicPG branches on the chip family):
     #   newer chips (RTL8156...): dword protocol, command word at 0xDD04         -> efuse_read_dword / _write_dword
     #   older chips (RTL8153...): 17-bit cells, command word at 0xDD02 (as r8152) -> efuse8153_read_byte (read only)
     # An older chip never clears the 0xDD04 busy bit - so: bounded poll, and a clear error on the first timeout.
@@ -423,7 +424,7 @@ class RtlDiag:
             "efuse controller does not answer the RTL8156 protocol (busy bit never clears). Nothing was written.")
 
     def efuse8153_read_byte(self, addr):
-        """Older-family efuse read, as Realtek's own tooling does it: 0xDD02 = 0x8000 | addr/2,
+        """Older-family efuse read, ported from RTUNicPG EFuseRead (FUN_14001c8d0): 0xDD02 = 0x8000 | addr/2,
         wait for bit31 of the 0xDD00 dword to clear, then undo the per-word bit rotation of the 17-bit cell."""
         self.dwrite(0xDD00, 4, ((0x80000000 | ((addr & 0xFE) << 15)) & 0xFFFFFFFF).to_bytes(4, "little"))
         for _ in range(self.EFUSE_POLLS):
@@ -444,7 +445,7 @@ class RtlDiag:
         return (word >> 8 if addr & 1 else word) & 0xFF
 
     def efuse8153_dump(self, nbytes=192):
-        """User efuse of an older-family chip (192 bytes on an RTL8153B)."""
+        """User efuse of an older-family chip (RTUNicPG reads 192 bytes for RTL8153B)."""
         return bytes(self.efuse8153_read_byte(a) for a in range(nbytes))
 
     def efuse_read_dword(self, dw):
