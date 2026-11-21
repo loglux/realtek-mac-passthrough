@@ -83,13 +83,6 @@ never cleared. RtlPassthru doesn't edit anything that is there; it **appends one
 chip applies it at every power-on. Because it can't be undone, the tool always shows a **preview**
 first and writes only after you confirm.
 
-### What it can do on which chip
-
-| Chip | Reads & diagnoses | Burns `0xCFDB = 0x03` |
-|---|:---:|:---:|
-| **RTL8156** (2.5 G) | ✓ | ✓ |
-| **RTL8153** (1 G) | ✓ | — its efuse uses a different protocol; read-only for now |
-
 ---
 
 ## The dock that started this
