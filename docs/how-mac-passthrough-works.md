@@ -1,11 +1,11 @@
-# How MAC Address Pass-Through Works — and why a dock can support one OS but not another
+# How MAC Address Pass-Through Works — and why a dock can work on one OS but not another
 
-MAC Address Pass-Through looks like a single on/off feature. It isn't. Whether a dock "supports"
-it depends on **two sides agreeing** — and the part that trips everyone up is that **different
-operating systems check a *different* marker on the card.** That is why the very same dock can pass
-the MAC through on Windows but not on Linux, or the other way around.
+MAC Address Pass-Through looks like a single on/off feature. It isn't. Whether a dock "supports" it
+depends on **two sides agreeing** — and the part that trips everyone up is that **different operating
+systems check different values in the dock's chip.** That is why the very same dock can pass the
+laptop's MAC through on Windows but not on Linux, or the other way around.
 
-This page explains the mechanism end to end, so the behaviour stops being mysterious.
+This page explains the mechanism end to end.
 
 ---
 
@@ -13,168 +13,152 @@ This page explains the mechanism end to end, so the behaviour stops being myster
 
 Pass-through only happens when **both** of these are true:
 
-1. **The laptop (host) offers its MAC.** Business laptops with the BIOS option enabled publish the
-   laptop's own MAC in an ACPI value named `_AUXMAC_` — Dell exposes it as `\_SB.AMAC`, Lenovo as
-   `\MACA`. No BIOS option, no offered MAC, nothing to pass through.
-2. **The dock's card is allowed to take it.** The dock's Realtek USB NIC must be *marked* as
-   pass-through capable. Without the mark, the driver reads the offered MAC and simply ignores it.
+1. **The laptop offers its MAC.** Business laptops with the BIOS option enabled publish the laptop's
+   own MAC through ACPI as a string `_AUXMAC_#AABBCCDDEEFF#` — Dell in the object `\_SB.AMAC`, Lenovo
+   in `\MACA`. No BIOS option, no offered MAC, nothing to pass through.
+2. **The driver accepts it for this dock.** The driver reads a few values from the dock's Realtek
+   chip and decides from them whether to use the offered MAC. If the check fails, it ignores the MAC.
 
-Side 1 is the laptop's job. **This page is about side 2 — the card — because that is where docks
-differ, and where "supported / not supported" is actually decided.**
-
----
-
-## The card's markers
-
-A Realtek USB NIC carries two separate markers that matter here. They live in *different* places on
-the chip, and — this is the crux — *different* layers look at *different* ones.
-
-**Marker 1 — the capability byte, register `0xCFDB`.**
-At power-on the chip loads a capability byte, register `0xCFDB`, from its internal memory. Two bits
-in it matter:
-
-- **bit 1, AUX MAC clone** — it drives standard `_AUXMAC_` pass-through on Windows and at pre-boot.
-- **bit 0, RT MAC clone** (Linux calls it `PASS_THRU`) — Windows and pre-boot don't rely on it, but
-  Linux checks it on `-AD` chips (see below).
-
-The names are Realtek's and the drivers' own: the Windows Realtek driver (`rtump64x64`,
-`NIC_QuerySpecificHwCaps`) logs *"Is RT MAC clone support system"* for bit 0 and *"Is AUX MAC clone
-support system"* for bit 1; Realtek's programming tool (RTUNicPG) calls the same bits `DOCKING` and
-`SELF_POWER`; the Linux driver defines bit 0 as `PASS_THRU_MASK`.
-
-These bits are settings: they can be burned into the chip's efuse, which is exactly what the
-companion tool, RtlPassthru, does (it writes `0x03`, both bits).
-
-**Marker 2 — the chip variant, in the `USB_MISC` registers.**
-Separately, the chip records *which factory variant* it is — `RTL8153-AD`, `-BND` or `-BD`. This
-marker lives in the `USB_MISC` registers, which are **not** `0xCFDB`. It is set at the factory;
-RtlPassthru does not change it. (Linux also accepts **Lenovo**-branded devices, but those it recognises
-by their USB vendor ID, not by a register.)
-
-Keep these two apart. The next section is entirely about which layer reads which one.
+Side 1 is the laptop's job. **This page is about side 2 — because that is where docks differ.**
 
 ---
 
-## Each layer checks a different marker
+## What the drivers read from the chip
+
+The chip holds only **numbers in its registers**; the drivers read them over USB. The names in the
+third column are what the drivers call those values — nothing is written in the chip.
+
+| register in the chip | value | what the drivers call it |
+|---|---|---|
+| `0xCFDB` | bit 1 set | **AUX MAC clone** *(Windows driver)* |
+| `0xCFDB` | bit 0 set | **RT MAC clone** *(Windows driver)*, `PASS_THRU` *(Linux driver)* |
+| `USB_MISC_0` (`0xD81A`) | `value & 0xFEE0 == 0x1000` | **RTL8153-AD** *(Linux driver)* |
+| `USB_MISC_1` (`0xD81F`) | bit 2 set / bit 0 set | **RTL8153-BND** / **RTL8153-BD** *(Linux driver)* |
+
+Where the values come from:
+
+- **`0xCFDB`** is filled at every power-on: first with the chip's built-in default, then with any
+  setting records stored in the chip's efuse (one-time-programmable memory), which overwrite it.
+  That is why it can be changed by burning a record into the efuse — what RtlPassthru does
+  (`0xCFDB = 0x03`, both bits).
+- **`USB_MISC_0` / `USB_MISC_1`** are set at the factory. RtlPassthru reads them but does not change
+  them.
+
+Where the names come from:
+
+- **Windows driver** (`rtump64x64`, function `NIC_QuerySpecificHwCaps`) reads `0xCFDB` and logs
+  *"Is RT MAC clone support system"* when bit 0 is set and *"Is AUX MAC clone support system"* when
+  bit 1 is set.
+- **Realtek's programming tool** (RTUNicPG) calls the same two bits `DOCKING` (bit 0) and `SELF_POWER`
+  (bit 1) — its configuration fields, also printed when it dumps a chip's efuse.
+- **Linux driver** ([`drivers/net/usb/r8152.c`](https://github.com/torvalds/linux/blob/master/drivers/net/usb/r8152.c))
+  defines `EFUSE 0xcfdb` and `PASS_THRU_MASK 0x1`, and `AD_MASK 0xfee0`, `BND_MASK 0x0004`,
+  `BD_MASK 0x0001` for the `USB_MISC` checks; its comments name the variants `RTL8153-AD`,
+  `RTL8153-BND` and `RTL8153-BD`.
+
+---
+
+## How each system decides
 
 ### Windows (Realtek driver)
 
-The Windows Realtek driver is **generic**. It reads `0xCFDB`, derives an internal value it calls
-`AUXMacType`, and applies pass-through whenever the **AUX bit** is set. It does **not** care what
-*variant* of Realtek chip it is — any Realtek chip with the AUX bit on will do.
+The Windows driver reads `0xCFDB` and builds an internal value, `AUXMacType`: bit 0 of `0xCFDB` adds
+2, bit 1 adds 1. It applies pass-through when `AUXMacType & 1` — that is, **when bit 1 (AUX MAC clone)
+is set.** It does not look at the `USB_MISC` values, so any Realtek chip with bit 1 set will do.
 
 The same driver can also be *forced* in software, through a few **per-adapter registry values** —
 `EnableCloneMAC`, `EnableManualCloneMAC`, `AUXMacType`, `AUXMacSupportVer` — which switch
-pass-through on even when the chip's AUX bit is off. This works, but it is a **Windows-only, local
-override**: those values sit in the registry under **one adapter instance**, so they do **not**
-travel with the card, do **not** survive a move to another machine or a clean install, and do
-nothing at pre-boot or on Linux. Burning the AUX bit into the chip itself (what RtlPassthru does) is
-the opposite — it rides along with the card, and every layer that honours the AUX bit sees it.
+pass-through on even when bit 1 is off. This works, but it is a **Windows-only, local override**:
+those values sit in the registry under **one adapter instance**, so they do **not** travel with the
+card, do **not** survive a move to another machine or a clean install, and do nothing at pre-boot or
+on Linux. Burning bit 1 into the chip itself (what RtlPassthru does) travels with the card.
 
 ### Pre-boot / PXE (laptop firmware, before any OS)
 
-Same requirement as Windows, one layer lower. During network boot the laptop firmware programs the
-MAC into the card, and the card honours it **if the AUX bit is set.** This is the valuable part for
-imaging and deployment — the machine already carries its real identity before any OS loads.
+During network boot the laptop's own firmware drives the card. We tested it on a Dell with BIOS
+*MAC Address Pass-Through* enabled: a dock whose `0xCFDB` read `0x01` (bit 0 only) came up under its
+own MAC; after we burned `0x03` (both bits) it came up under the laptop's MAC. So pre-boot needs
+bit 1, like Windows. This is the valuable part for imaging and deployment — the machine carries its
+real identity before any OS loads.
 
-### Linux (`r8152` driver) — the different one
+### Linux (`r8152` driver)
 
-Linux does **not** look at the `0xCFDB` AUX bit first. It asks **"what *kind* of chip is this?"**
-and only lets recognised factory variants through. From the mainline kernel
-(`drivers/net/usb/r8152.c`, `vendor_mac_passthru_addr_read`):
+Linux checks the chip variant first. From `vendor_mac_passthru_addr_read()` in the mainline kernel
+(excerpt, unchanged):
 
 ```c
-if (tp->lenovo_macpassthru) {                 /* a Lenovo-specific chip   */
-        ...                                   /* -> read \MACA            */
-} else if ((USB_MISC_0 & AD_MASK) == 0x1000) {/* an RTL8153-AD variant?   */
-        if ((EFUSE & PASS_THRU_MASK) != 1)    /* ...then the efuse bit too */
-                return -ENODEV;
-} else if (!(USB_MISC_1 & (BND_MASK | BD_MASK))) { /* -BND / -BD variant?  */
-        return -ENODEV;                       /* none of the above -> no  */
-}
-/* passed the gate -> read the host MAC from \_SB.AMAC and apply it */
+	if (tp->lenovo_macpassthru) {
+		mac_obj_name = "\\MACA";
+		mac_obj_type = ACPI_TYPE_STRING;
+		mac_strlen = 0x16;
+	} else {
+		/* test for -AD variant of RTL8153 */
+		ocp_data = ocp_read_word(tp, MCU_TYPE_USB, USB_MISC_0);
+		if ((ocp_data & AD_MASK) == 0x1000) {
+			/* test for MAC address pass-through bit */
+			ocp_data = ocp_read_byte(tp, MCU_TYPE_USB, EFUSE);
+			if ((ocp_data & PASS_THRU_MASK) != 1) {
+				netif_dbg(tp, probe, tp->netdev,
+						"No efuse for RTL8153-AD MAC pass through\n");
+				return -ENODEV;
+			}
+		} else {
+			/* test for RTL8153-BND and RTL8153-BD */
+			ocp_data = ocp_read_byte(tp, MCU_TYPE_USB, USB_MISC_1);
+			if ((ocp_data & BND_MASK) == 0 && (ocp_data & BD_MASK) == 0) {
+				netif_dbg(tp, probe, tp->netdev,
+						"Invalid variant for MAC pass through\n");
+				return -ENODEV;
+			}
+		}
+
+		mac_obj_name = "\\_SB.AMAC";
+		mac_obj_type = ACPI_TYPE_BUFFER;
+		mac_strlen = 0x17;
+	}
 ```
 
-The key points:
+In plain words:
 
-- Linux keys on the **chip variant marker**, which lives in the `USB_MISC_0` / `USB_MISC_1`
-  registers — a *different* register from `0xCFDB`.
-- A chip that is **not** a recognised variant (`-AD`, `-BND`, `-BD`), on a device that isn't Lenovo's, is rejected
-  **even if its `0xCFDB` AUX bit is set.** The driver never gets far enough to look at that bit.
-- Only inside the `-AD` branch does Linux *also* check an efuse bit (`0xCFDB` bit 0), and only
-  *after* the variant marker has already matched. For the `-BND` / `-BD` variants, the matching
-  variant marker alone is enough.
-
----
-
-## The one thing to take away
-
-Line the layers up against the card's markers and the puzzle dissolves:
-
-The chip holds only numbers; the names are what the drivers call them.
-
-| register in the chip | value | what the drivers call it | Windows | Pre-boot / PXE | Linux |
-|---|---|---|:---:|:---:|:---:|
-| `0xCFDB` | bit 1 set | AUX MAC clone *(Windows driver)* | required | required | not used |
-| `0xCFDB` | bit 0 set | RT MAC clone *(Windows)*, `PASS_THRU` *(Linux)* | not used | not enough alone | required on `-AD` chips ¹ |
-| `USB_MISC_0` (`0xD81A`) | `& 0xFEE0` = `0x1000` | `RTL8153-AD` *(Linux)* | not used | not used | one of these required ¹ |
-| `USB_MISC_1` (`0xD81F`) | bit 2 / bit 0 set | `RTL8153-BND` / `-BD` *(Linux)* | not used | not used | ″ |
-
-- *Not enough alone*: a chip with only bit 0 set (`0x01`) did not take the laptop's MAC at pre-boot;
-  with both bits (`0x03`) it did.
-- ¹ Linux has one exception: on a **Lenovo**-branded device (recognised by its USB vendor ID) it skips
-  these checks and reads Lenovo's `\MACA` instead.
-
-**Windows and PXE look at the AUX bit; Linux looks at the chip variant.** They are checking
-*different markers*, so the same card can be accepted by one system and refused by another. Nothing
-is "broken" — the card simply satisfies one gate and not the other.
-
-Three cases make it concrete:
-
-- **Only the AUX bit set** (a generic chip, burned) → **Windows and PXE: yes. Linux: no** (it is
-  not a recognised variant).
-- **Only a recognised variant** (a factory `-AD` / `-BND` / `-BD` chip or a Lenovo device, AUX bit off — on an
-  `-AD` chip, with bit 0 set) → **Linux: yes. Windows and PXE: no** (no AUX bit to read).
-- **Both** (a recognised variant *and* the AUX bit set) → **works everywhere.**
+- **Lenovo devices** (`tp->lenovo_macpassthru`, set from the device's USB vendor ID) skip the chip
+  checks and read Lenovo's `\MACA`.
+- Otherwise, if `USB_MISC_0 & 0xFEE0 == 0x1000` (the driver's *-AD variant*), it also needs **bit 0
+  of `0xCFDB`** (`PASS_THRU`).
+- Otherwise it needs **bit 2 or bit 0 of `USB_MISC_1`** (the driver's *-BND / -BD variants*). If
+  neither is set it gives up — whatever `0xCFDB` says.
+- **Linux never looks at bit 1 of `0xCFDB`** — the bit Windows and pre-boot need.
 
 ---
 
-## Chip variants: `-AD`, `-BND`, `-BD`, Lenovo
+## Side by side
 
-The variants Linux looks for are **factory SKUs of the Realtek chip**, not user settings:
+| register in the chip | value | Windows | Pre-boot / PXE | Linux |
+|---|---|:---:|:---:|:---:|
+| `0xCFDB` | bit 1 set *(AUX MAC clone)* | required | required | not used |
+| `0xCFDB` | bit 0 set *(RT MAC clone / `PASS_THRU`)* | not used | not enough alone | required if the `-AD` test matches |
+| `USB_MISC_0` | `& 0xFEE0 == 0x1000` *(-AD)* | not used | not used | this, **or** … |
+| `USB_MISC_1` | bit 2 / bit 0 set *(-BND / -BD)* | not used | not used | … this |
 
-- **RTL8153-AD** — the original Dell-oriented variant; gated by an efuse bit (`0xCFDB` bit 0) as
-  well as the variant marker.
-- **RTL8153-BND / -BD** — later variants that pass on the variant marker alone, with no efuse bit
-  required.
-- **Lenovo devices** — not a chip variant: Linux recognises them by their USB vendor ID and reads
-  Lenovo's own `\MACA` instead.
+*Not enough alone*: `0x01` (bit 0 only) did not give pass-through at pre-boot; `0x03` did.
+Lenovo devices on Linux skip the chip checks (see above).
 
-The variant marker sits in the `USB_MISC` registers and is set at the factory. A generic, unbranded
-Realtek NIC is usually **none** of these — which is exactly why
-such a chip can work on Windows yet be turned away by Linux.
+So:
 
-> These variant names aren't ours — they come straight from the Linux driver that gates on them: the
-> `AD_MASK` / `BND_MASK` / `BD_MASK` defines and the `-AD` / `-BND` / `-BD` comments in
-> [`drivers/net/usb/r8152.c`](https://github.com/torvalds/linux/blob/master/drivers/net/usb/r8152.c),
-> added over the years by the kernel patches that taught Linux about each new dock generation.
+- **Bit 1 set, chip not an `-AD` / `-BND` / `-BD` variant** → Windows and pre-boot: yes. Linux: no.
+- **Variant matches, bit 1 not set** (on an `-AD` chip, with bit 0 set) → Linux: yes. Windows and
+  pre-boot: no.
+- **Both** → works everywhere.
 
 ---
 
 ## What this means in practice
 
-- **Windows is the easy case.** Any Realtek chip with the AUX bit set will pass the MAC through.
-- **Pre-boot / PXE** follows the same rule, below the OS — the valuable part for network boot and
-  imaging.
-- **Linux is the strict case.** It wants a recognised chip *variant* first. A generic dongle can be
-  refused by Linux even when Windows is perfectly happy.
-- **Setting the AUX bit** (what the tool does to the chip) covers **Windows and PXE on any Realtek
-  chip, and Linux too when the chip is already a recognised variant.** It does not set the
-  chip-variant marker.
+- **Windows and pre-boot** need bit 1 of `0xCFDB` on any Realtek chip. That is what RtlPassthru
+  burns (it writes `0x03`, so bit 0 is set too).
+- **Linux** needs the `USB_MISC` values to match one of its variants, and on an `-AD` match also
+  bit 0. RtlPassthru does not change the `USB_MISC` values.
 
-As a worked example: pass-through on Linux was **confirmed** on an RTL8156 whose AUX bit we had
-burned — an AD-class chip that Linux recognises — running Ubuntu. That is the one Linux result we
-have proven directly; it does not extend to generic, non-variant chips, which Linux still refuses.
-
-Once you see pass-through as **different markers checked by different layers**, the "why does it
-work here but not there?" questions answer themselves.
+Confirmed on hardware: our RTL8156 reads `USB_MISC_0 = 0x1000`, so Linux's *-AD* test matches it;
+after burning `0xCFDB = 0x03` it took the laptop's MAC in Windows, at Dell pre-boot and on Ubuntu
+(`r8152 … Using pass-thru MAC addr`). An RTL8153 adapter with `USB_MISC_0 = 0x0000` and no BND/BD bit
+kept its own MAC on Ubuntu, exactly as the code above says.
