@@ -170,6 +170,12 @@ pass-through isn't tied to any one operating system:
 - **Pre-boot / PXE** — the host firmware programs the MAC into the card *before any OS loads*. We
   tested this on a Dell with BIOS *MAC Address Pass-Through* enabled, and it worked.
 - **Windows** — the Realtek driver reads `0xCFDB`, derives `AUXMacType`, and clones the `_AUXMAC_` MAC.
+- **Linux** — the `r8152` driver applies the host MAC too, *when the chip is a recognised variant*
+  (ours is). Confirmed: our burned RTL8156 came up under the laptop's MAC on Ubuntu.
+
+**Each layer actually checks a *different* thing on the card** — which is why a dock can pass the MAC
+through on one OS but not another. The full story is in
+**[How MAC Pass-Through Works](docs/how-mac-passthrough-works.md)**.
 
 Because the capability sits in the hardware, network boot already sees the laptop's identity — which
 is what makes this useful for imaging and deployment, not just day-to-day docking.
