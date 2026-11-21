@@ -167,7 +167,7 @@ def resolve_dll(which: str) -> str:
                 return found[k]["path"]
         raise FileNotFoundError(
             f"no '{which}' Realtek diag DLL found. Put RtlDirectDiagLib64.dll (with its deps) in "
-            f"RtlPassthru/dll/, or set RTLDIAG_DLL_DIR. Detected: {sorted(found)}")
+            f"the tool's dll/ folder, or set RTLDIAG_DLL_DIR. Detected: {sorted(found)}")
     if not os.path.exists(which):
         raise FileNotFoundError(f"DLL not found: {which}")
     return which
