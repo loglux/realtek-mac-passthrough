@@ -28,12 +28,19 @@ Side 1 is the laptop's job. **This page is about side 2 — because that is wher
 The chip holds only **numbers in its registers**; the drivers read them over USB. The names in the
 third column are what the drivers call those values — nothing is written in the chip.
 
-| register in the chip | value | what the drivers call it |
-|---|---|---|
-| `0xCFDB` | bit 1 set | **AUX MAC clone** *(Windows driver)* |
-| `0xCFDB` | bit 0 set | **RT MAC clone** *(Windows driver)*, `PASS_THRU` *(Linux driver)* |
-| `USB_MISC_0` (`0xD81A`) | `value & 0xFEE0 == 0x1000` | **RTL8153-AD** *(Linux driver)* |
-| `USB_MISC_1` (`0xD81F`) | bit 2 set / bit 0 set | **RTL8153-BND** / **RTL8153-BD** *(Linux driver)* |
+| register in the chip | bits | value that counts | what the drivers call it |
+|---|---|---|---|
+| `0xCFDB` (1 byte) | bit 1 | 1 | **AUX MAC clone** *(Windows driver)* |
+| `0xCFDB` (1 byte) | bit 0 | 1 | **RT MAC clone** *(Windows driver)*, `PASS_THRU` *(Linux driver)* |
+| `USB_MISC_0` (`0xD81A`, 16 bit) | bits 15–9 and 7–5 (mask `0xFEE0`) | `0x1000`: bit 12 = 1, the rest 0 | **RTL8153-AD** *(Linux driver)* |
+| `USB_MISC_1` (`0xD81F`, 1 byte) | bit 2 / bit 0 | 1 | **RTL8153-BND** / **RTL8153-BD** *(Linux driver)* |
+
+`0xCFDB` bit by bit — the values we read:
+
+| `0xCFDB` | bits 7–2 | bit 1 | bit 0 |
+|---|:---:|:---:|:---:|
+| `0x01` — WAVLINK dock and RTL8156 dongle, as shipped | 0 | 0 | 1 |
+| `0x03` — after RtlPassthru | 0 | **1** | 1 |
 
 Where the values come from:
 
@@ -132,12 +139,12 @@ In plain words:
 
 ## Side by side
 
-| register in the chip | value | Windows | Pre-boot / PXE | Linux |
-|---|---|:---:|:---:|:---:|
-| `0xCFDB` | bit 1 set *(AUX MAC clone)* | required | required | not used |
-| `0xCFDB` | bit 0 set *(RT MAC clone / `PASS_THRU`)* | not used | not enough alone | required if the `-AD` test matches |
-| `USB_MISC_0` | `& 0xFEE0 == 0x1000` *(-AD)* | not used | not used | this, **or** … |
-| `USB_MISC_1` | bit 2 / bit 0 set *(-BND / -BD)* | not used | not used | … this |
+| register in the chip | bits | needed | Windows | Pre-boot / PXE | Linux |
+|---|---|---|:---:|:---:|:---:|
+| `0xCFDB` | bit 1 *(AUX MAC clone)* | 1 | required | required | not used |
+| `0xCFDB` | bit 0 *(RT MAC clone / `PASS_THRU`)* | 1 | not used | not enough alone | required if the `-AD` test matches |
+| `USB_MISC_0` | mask `0xFEE0` *(-AD)* | `0x1000` | not used | not used | this, **or** … |
+| `USB_MISC_1` | bit 2 / bit 0 *(-BND / -BD)* | either = 1 | not used | not used | … this |
 
 *Not enough alone*: `0x01` (bit 0 only) did not give pass-through at pre-boot; `0x03` did.
 Lenovo devices on Linux skip the chip checks (see above).

@@ -30,17 +30,24 @@ Pass-through needs two things: the laptop offers its MAC (the BIOS option publis
 `_AUXMAC_`), and the driver accepts it for this dock. The driver decides by reading registers in the
 dock's Realtek chip — and **each system requires different values:**
 
-| register in the chip | value | Windows | Pre-boot / PXE | Linux | called |
-|---|---|:---:|:---:|:---:|---|
-| `0xCFDB` | bit 1 set | required | required | not used | AUX MAC clone ¹, `SELF_POWER` ² |
-| `0xCFDB` | bit 0 set | not used | not enough alone | required if the `-AD` test matches | RT MAC clone ¹, `DOCKING` ², `PASS_THRU` ³ |
-| `USB_MISC_0` (`0xD81A`) | `& 0xFEE0 == 0x1000` | not used | not used | this, **or** … | RTL8153-AD ³ |
-| `USB_MISC_1` (`0xD81F`) | bit 2 or bit 0 set | not used | not used | … this | RTL8153-BND / -BD ³ |
+| register in the chip | bits | needed | Windows | Pre-boot / PXE | Linux | called |
+|---|---|---|:---:|:---:|:---:|---|
+| `0xCFDB` (1 byte) | bit 1 | 1 | required | required | not used | AUX MAC clone ¹, `SELF_POWER` ² |
+| `0xCFDB` (1 byte) | bit 0 | 1 | not used | not enough alone | required if the `-AD` test matches | RT MAC clone ¹, `DOCKING` ², `PASS_THRU` ³ |
+| `USB_MISC_0` (`0xD81A`, 16 bit) | bits 15–9 and 7–5 (mask `0xFEE0`) | `0x1000`: bit 12 = 1, the rest 0 | not used | not used | this, **or** … | RTL8153-AD ³ |
+| `USB_MISC_1` (`0xD81F`, 1 byte) | bit 2, bit 0 | either = 1 | not used | not used | … this | RTL8153-BND / -BD ³ |
 
 Names: ¹ Windows Realtek driver — its log messages *"Is AUX / RT MAC clone support system"*
 (`rtump64x64`, `NIC_QuerySpecificHwCaps`); ² Realtek's programming tool (RTUNicPG) — its
 configuration fields; ³ Linux driver `drivers/net/usb/r8152.c` — its defines and comments. The chip
 itself holds only the numbers.
+
+`0xCFDB` bit by bit — the values we read:
+
+| `0xCFDB` | bits 7–2 | bit 1 | bit 0 |
+|---|:---:|:---:|:---:|
+| `0x01` — WAVLINK dock and RTL8156 dongle, as shipped | 0 | 0 | 1 |
+| `0x03` — after RtlPassthru | 0 | **1** | 1 |
 
 - `0xCFDB` is filled at every power-on: the chip's built-in default, then any setting records in its
   efuse on top. The `USB_MISC` registers are set at the factory.
