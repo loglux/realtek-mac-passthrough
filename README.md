@@ -26,26 +26,19 @@ The good news is that RtlPassthru can burn it in.
 
 ## How it works
 
-The card carries three markers. Each system checks its own:
+RtlPassthru reads the chip's capability register **`0xCFDB`** and checks its two pass-through bits:
 
-| marker | where it lives | Windows | Pre-boot | Linux |
-|---|---|:---:|:---:|:---:|
-| **AUX-clone** — `0xCFDB` bit 1 | capability register; can be burned into efuse | **checks** | **checks** | — |
-| **RT-clone** (`PASS_THRU` in Linux) — `0xCFDB` bit 0 | same register | — | — | **checks**, on `-AD` chips |
-| **chip variant** — `-AD` / `-BND` / `-BD` / Lenovo | `USB_MISC` registers, set at the factory | — | — | **checks** |
+| bit | name | needed for |
+|:---:|---|---|
+| **bit 1** | AUX-clone | **Windows** and **pre-boot / PXE** |
+| **bit 0** | RT-clone (`PASS_THRU` in Linux) | **Linux**, on `-AD` chips |
 
-`0xCFDB` is filled at every power-on: the chip's built-in default first, then any setting records in
-its efuse on top. What we read on real cards:
+**If bit 1 is missing, RtlPassthru sets both bits — `0x03` — by burning one record into the chip's
+efuse.** After a re-plug the chip loads it, and Windows and pre-boot take the laptop's MAC.
 
-| card | `0xCFDB` | Windows / pre-boot |
-|---|:---:|:---:|
-| WAVLINK dock (RTL8156), as shipped | `0x01` | ✗ |
-| RTL8156 USB dongle, as shipped | `0x01` | ✗ |
-| UGREEN adapter (RTL8153), as shipped | `0x03` | ✓ |
-| WAVLINK dock and a dongle, **after RtlPassthru** | `0x03` | ✓ |
-
-**RtlPassthru writes `0x03`** — both bits, like a card that ships enabled. It never changes the chip
-variant. The full picture, with the driver code, is in
+Linux has one more condition: the chip must be a recognised variant — `-AD`, `-BND`, `-BD` or a
+Lenovo chip. That is a factory marker; RtlPassthru reads it and shows it, but does not change it.
+The full picture, with the driver code, is in
 **[How MAC Pass-Through Works](docs/how-mac-passthrough-works.md)**.
 
 **Why it's a "burn".** The efuse is one-time-programmable (OTP) memory: each bit can be set once and
