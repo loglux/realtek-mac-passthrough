@@ -111,11 +111,14 @@ The key points:
 
 Line the layers up against the card's markers and the puzzle dissolves:
 
-| value the driver reads from the chip | register | Windows | Pre-boot / PXE | Linux |
-|---|---|:---:|:---:|:---:|
-| **AUX MAC clone bit** | `0xCFDB` bit 1 | required | required | not used |
-| **RT MAC clone bit** (`PASS_THRU` in Linux) | `0xCFDB` bit 0 | not used | not enough alone | required on `-AD` chips ¹ |
-| **chip variant** `-AD`, `-BND` or `-BD` | `USB_MISC_0` (`0xD81A`), `USB_MISC_1` (`0xD81F`) | not used | not used | required ¹ |
+The chip holds only numbers; the names are what the drivers call them.
+
+| register in the chip | value | what the drivers call it | Windows | Pre-boot / PXE | Linux |
+|---|---|---|:---:|:---:|:---:|
+| `0xCFDB` | bit 1 set | AUX MAC clone *(Windows driver)* | required | required | not used |
+| `0xCFDB` | bit 0 set | RT MAC clone *(Windows)*, `PASS_THRU` *(Linux)* | not used | not enough alone | required on `-AD` chips ¹ |
+| `USB_MISC_0` (`0xD81A`) | `& 0xFEE0` = `0x1000` | `RTL8153-AD` *(Linux)* | not used | not used | one of these required ¹ |
+| `USB_MISC_1` (`0xD81F`) | bit 2 / bit 0 set | `RTL8153-BND` / `-BD` *(Linux)* | not used | not used | ″ |
 
 - *Not enough alone*: a chip with only bit 0 set (`0x01`) did not take the laptop's MAC at pre-boot;
   with both bits (`0x03`) it did.

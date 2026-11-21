@@ -27,17 +27,18 @@ The good news is that RtlPassthru can burn it in.
 ## How it works
 
 Pass-through needs two things: the laptop offers its MAC (the BIOS option publishes it as
-`_AUXMAC_`), and the dock's Realtek chip reports that it may take it. The chip reports that through
-values in its registers, which the driver reads over USB — and **each system checks different ones:**
+`_AUXMAC_`), and the dock's Realtek chip reports that it may take it. The chip holds only numbers
+in its registers; the drivers read them over USB and **each system checks different ones:**
 
-| value the driver reads from the chip | register | Windows | Pre-boot / PXE | Linux |
-|---|---|:---:|:---:|:---:|
-| **AUX MAC clone bit** | `0xCFDB` bit 1 | required | required | not used |
-| **RT MAC clone bit** | `0xCFDB` bit 0 | not used | not enough alone | required on `-AD` chips ¹ |
-| **chip variant** `-AD`, `-BND` or `-BD` | `USB_MISC_0` (`0xD81A`), `USB_MISC_1` (`0xD81F`) | not used | not used | required ¹ |
+| register in the chip | value | what the drivers call it | Windows | Pre-boot / PXE | Linux |
+|---|---|---|:---:|:---:|:---:|
+| `0xCFDB` | bit 1 set | AUX MAC clone *(Windows driver)* | required | required | not used |
+| `0xCFDB` | bit 0 set | RT MAC clone *(Windows)*, `PASS_THRU` *(Linux)* | not used | not enough alone | required on `-AD` chips ¹ |
+| `USB_MISC_0` (`0xD81A`) | `& 0xFEE0` = `0x1000` | `RTL8153-AD` *(Linux)* | not used | not used | one of these required ¹ |
+| `USB_MISC_1` (`0xD81F`) | bit 2 / bit 0 set | `RTL8153-BND` / `-BD` *(Linux)* | not used | not used | ″ |
 
 - `0xCFDB` is filled at every power-on: the chip's built-in default, then any setting records in its
-  efuse on top. The variant registers are set at the factory.
+  efuse on top. The `USB_MISC` values are set at the factory (Linux calls them the chip variant).
 - *Not enough alone*: a chip with only bit 0 set (`0x01`) did not take the laptop's MAC at pre-boot;
   with both bits (`0x03`) it did.
 - ¹ Linux has one exception: on a **Lenovo**-branded device (recognised by its USB vendor ID) it skips
