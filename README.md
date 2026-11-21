@@ -1,8 +1,8 @@
 # Enable MAC Address Pass-Through on Thunderbolt / USB docking stations (and dongles)
 
-**Thunderbolt and USB-C docks, and USB Ethernet dongles, use a Realtek chip for their wired network.
-Many ship with MAC Address Pass-Through switched off. RtlPassthru checks your adapter and switches it
-on.**
+**Thunderbolt and USB-C docks, and USB Ethernet dongles, often use a Realtek chip for their wired
+network. Some ship with MAC Address Pass-Through switched off. RtlPassthru shows where pass-through
+works on your adapter — Windows, pre-boot, Linux — and, on RTL8156 chips, switches it on.**
 
 When you dock a laptop, the dock's Ethernet port goes online under *its own* MAC address, not the
 laptop's. On corporate and campus networks that breaks things — access control, licensing, DHCP
@@ -12,9 +12,9 @@ whether you're docked or not. Business laptops offer it through a firmware value
 Dell's BIOS setting *"MAC Address Pass-Through"*, and the same feature on Lenovo and HP.
 
 Here's the catch, and the reason this tool exists: **some docks simply don't accept it — and it has
-nothing to do with price.** The capability is just one bit inside the Realtek chip, and on some units
-it's left unset at the factory. We hit it on a **premium Thunderbolt 4 dock**. The good news is that
-it's exactly one bit — and RtlPassthru can burn it in.
+nothing to do with price.** For Windows and pre-boot, the capability is one bit inside the Realtek
+chip, and on some units it's left unset at the factory. We hit it on a **premium Thunderbolt 4 dock**.
+The good news is that RtlPassthru can burn it in.
 
 | It can't (yet) | …now it can |
 |---|---|
@@ -26,35 +26,40 @@ it's exactly one bit — and RtlPassthru can burn it in.
 
 ## How it works
 
-At power-on the chip loads a capability byte — register **`0xCFDB`** — from its internal memory, and
-the Realtek driver passes the laptop's MAC through **only if the right bit in that byte is set.**
+The card carries three markers. Each system checks its own:
 
-`0xCFDB` carries two independent switches:
+| marker | where it lives | Windows | Pre-boot | Linux |
+|---|---|:---:|:---:|:---:|
+| **AUX-clone** — `0xCFDB` bit 1 | capability register; can be burned into efuse | **checks** | **checks** | — |
+| **RT-clone** (`PASS_THRU` in Linux) — `0xCFDB` bit 0 | same register | — | — | **checks**, on `-AD` chips |
+| **chip variant** — `-AD` / `-BND` / `-BD` / Lenovo | `USB_MISC` registers, set at the factory | — | — | **checks** |
 
-- **AUX-clone** — the standard `_AUXMAC_` pass-through used by Dell / Lenovo / HP. **This is the gate.**
-- **RT-clone** — a separate Realtek-only clone mode. It does **not** affect pass-through.
+`0xCFDB` is filled at every power-on: the chip's built-in default first, then any setting records in
+its efuse on top. What we read on real cards:
 
-What decides it is **which switch is on, not how big the number looks:**
+| card | `0xCFDB` | Windows / pre-boot |
+|---|:---:|:---:|
+| WAVLINK dock (RTL8156), as shipped | `0x01` | ✗ |
+| RTL8156 USB dongle, as shipped | `0x01` | ✗ |
+| UGREEN adapter (RTL8153), as shipped | `0x03` | ✓ |
+| WAVLINK dock and a dongle, **after RtlPassthru** | `0x03` | ✓ |
 
-| `0xCFDB` | AUX-clone | pass-through? | what it is |
-|:---:|:---:|:---:|---|
-| `0x00` | off | ✗ | blank chip |
-| `0x01` | off | ✗ | **RT-clone only — what an unsupported dock ships with** |
-| `0x02` | on  | partly | AUX only — Windows yes; Linux no on `-AD` chips; pre-boot untested |
-| `0x03` | on  | ✓ | both switches — **what RtlPassthru writes** |
+**RtlPassthru writes `0x03`** — both bits, like a card that ships enabled. It never changes the chip
+variant. The full picture, with the driver code, is in
+**[How MAC Pass-Through Works](docs/how-mac-passthrough-works.md)**.
 
-So an unsupported dock usually reads **`0x01`**: a clone bit *is* set, which makes it look capable —
-but it's the **wrong** switch (RT instead of AUX), and pass-through silently never happens. Turning
-the AUX switch on is the whole fix — and RtlPassthru writes **`0x03`**, both switches, exactly like a
-dock that ships enabled: Linux on `-AD` chips needs the RT bit too, and pre-boot was verified with
-`0x03`. *(The exact driver logic is in the [deep dive](#deep-dive).)*
+**Why it's a "burn".** The efuse is one-time-programmable (OTP) memory: each bit can be set once and
+never cleared. RtlPassthru doesn't edit anything that is there; it **appends one 4-byte record
+(`40 CF DB 03`) into blank space** right after the existing records, reads it back to verify, and the
+chip applies it at every power-on. Because it can't be undone, the tool always shows a **preview**
+first and writes only after you confirm.
 
-**Why it's a "burn".** `0xCFDB` is a register the chip fills at every power-on: first with its own
-built-in default, then with any setting records found in its **efuse** — a one-time-programmable (OTP)
-memory where each bit can be set once and never cleared. RtlPassthru doesn't edit anything that is
-there; it **appends one 4-byte record (`40 CF DB 03`) into blank space** right after the existing
-records, and the chip applies it at every power-on. Factory data is never touched, so a failed or interrupted burn simply doesn't take
-and leaves the card unharmed. Because it's irreversible, the tool always offers a **dry run** first.
+### What it can do on which chip
+
+| chip | reads & diagnoses | burns the AUX bit |
+|---|:---:|:---:|
+| **RTL8156** (2.5 G) | ✓ | ✓ |
+| **RTL8153** (1 G) | ✓ | — its efuse uses a different protocol; read-only for now |
 
 ---
 
@@ -71,18 +76,15 @@ The one that set this off was not a bargain-bin part — it was the **WAVLINK Th
 
 Its 2.5 Gigabit Ethernet is a **Realtek RTL8156** — WAVLINK's spec sheet never names the chip; we
 found it by reading the controller directly. Its `0xCFDB` read **`0x01`**: the RT switch on, AUX off
-— so this expensive dock would **not** pass the laptop's MAC through, in Windows or at pre-boot. We
-burned the AUX switch; it now reads **`0x03`** and passes the MAC through, including Dell's pre-boot
-pass-through. It's a **per-unit factory detail — even a premium dock can ship without it.**
+— and on a Dell with *MAC Address Pass-Through* enabled, this expensive dock did **not** take the
+laptop's MAC, in Windows or at pre-boot. We burned the AUX switch; it now reads **`0x03`** and passes
+the MAC through, including Dell's pre-boot pass-through. **Even a premium dock can ship without it.**
 
-**Not sure about yours? Try it on a dongle first.** Any Realtek **RTL8156 (2.5 G)** USB adapter works
-the same way. *(RTL8153 (1 G) chips are read and diagnosed too, but their efuse uses a different
-protocol that RtlPassthru does not write yet — the one we have came with the AUX bit already on.)*
-We found that a cheap USB 2.5G dongle
+**Not sure about yours? Try it on a dongle first.** A cheap USB 2.5G dongle
 ([a few pounds on AliExpress](https://www.aliexpress.com/item/1005009390264219.html)) uses the very
-same chip, so we ran the whole read → dry-run → burn flow on it first — it enabled pass-through and
-**kept working perfectly afterwards** (the burn doesn't harm the device). It's an easy, low-cost way
-to get comfortable with the process before touching an expensive dock.
+same RTL8156 chip, so we ran the whole read → preview → burn flow on it first — it enabled
+pass-through and **kept working perfectly afterwards.** It's an easy, low-cost way to get
+comfortable with the process before touching an expensive dock.
 
 <img src="docs/img/dongle.jpg" alt="An inexpensive USB-A 2.5G dongle" width="360">
 
@@ -129,15 +131,16 @@ Each system checks a different marker on the card, so the tiles can differ.
 Below the tiles, **one action card** offers what fits *this* card:
 
 - **Enable pass-through** — when the AUX bit is missing (the red screenshot at the top). Two steps:
-  - **1 · Preview** — the burn is irreversible, so always look before you leap. Preview reads the
-    chip, finds the free slot in the efuse and shows the exact record it *would* write — **without
-    touching anything.** The Burn button unlocks only after a successful preview.
+  - **1 · Preview** — Preview reads the chip, finds the free slot in the efuse and shows the exact
+    record it *would* write — **without touching anything.** The Burn button unlocks only after a
+    successful preview.
 
     ![Preview](docs/img/03-dry-run.png)
 
   - **2 · Burn AUX bit** — confirm in the dialog and keep the adapter plugged in while a progress
     bar shows it writing and verifying (the window can't be closed mid-write). Then **unplug and
-    re-plug** it, so the chip reloads its efuse, and press **Rescan**. The tiles should turn green.
+    re-plug** it, so the chip reloads its efuse, and press **Rescan**. The Windows and pre-boot
+    tiles should turn green — and Linux too, if the chip is a variant Linux recognises.
 - **Nothing to do** — everything already works.
 - **Linux: not on this card** — Windows and pre-boot work, but Linux only accepts recognised chip
   variants (`-AD`, `-BND`, `-BD` or Lenovo) and this chip isn't one. The tool says so plainly
@@ -159,9 +162,9 @@ all of it to a text file.
 
 The mechanism in full, for anyone who wants it.
 
-**From efuse to the driver.** `0xCFDB` isn't kept between power cycles — at each power-on it's loaded
-from the efuse by an autoload record (`40 CF DB XX`, the `XX` landing in the register). The driver
-(`rtump64x64`) then reads `0xCFDB` and builds its own internal byte, `AUXMacType` — **swapping the
+**From efuse to the Windows driver.** At each power-on `0xCFDB` starts at the chip's built-in default
+and is then overwritten by any `40 CF DB XX` record in the efuse (the last one wins). The Windows
+driver (`rtump64x64`) reads `0xCFDB` and builds its own internal byte, `AUXMacType` — **swapping the
 weight of the two bits** as it does:
 
 ```
@@ -169,44 +172,36 @@ weight of the two bits** as it does:
 0xCFDB  AUX-clone (weight 2)  ->  AUXMacType  bit of weight 1   <- the driver tests this one (& 1)
 ```
 
-Pass-through is applied for exactly `AUXMacType & 1`, and that bit is fed **only** by AUX-clone — so
-the numbers differ between the two bytes, but the meaning is the same: *is AUX on?*
+The Windows driver applies pass-through for exactly `AUXMacType & 1`, and that bit is fed **only** by
+AUX-clone. So a factory `0x01` becomes `AUXMacType = 2` (no pass-through), and `0x03` becomes
+`AUXMacType = 3` (pass-through).
 
-| `0xCFDB` | AUX | RT | → `AUXMacType` | `& 1` | pass-through |
-|:---:|:---:|:---:|:---:|:---:|:---:|
-| `0x00` | 0 | 0 | 0 | 0 | ✗ |
-| `0x01` | 0 | 1 | 2 | 0 | ✗ |
-| `0x02` | 1 | 0 | 1 | 1 | ✓ |
-| `0x03` | 1 | 1 | 3 | 1 | ✓ |
+**It works below the OS, not just inside it.** The marker sits in the chip itself, so pass-through
+isn't tied to any one operating system:
 
-**It works below the OS, not just inside it.** The AUX switch lives in the chip's own firmware, so
-pass-through isn't tied to any one operating system:
-
-- **Pre-boot / PXE** — the host firmware programs the MAC into the card *before any OS loads*. We
-  tested this on a Dell with BIOS *MAC Address Pass-Through* enabled, and it worked.
+- **Pre-boot / PXE** — the laptop's firmware gives the card the laptop's MAC *before any OS loads*.
+  We tested this on a Dell with BIOS *MAC Address Pass-Through* enabled: the dock took the MAC with
+  `0x03` and did not with `0x01`.
 - **Windows** — the Realtek driver reads `0xCFDB`, derives `AUXMacType`, and clones the `_AUXMAC_` MAC.
 - **Linux** — the `r8152` driver applies the host MAC too, *when the chip is a recognised variant*
-  (ours is). Confirmed: our burned RTL8156 came up under the laptop's MAC on Ubuntu.
-
-**Each layer actually checks a *different* thing on the card** — which is why a dock can pass the MAC
-through on one OS but not another. The full story is in
-**[How MAC Pass-Through Works](docs/how-mac-passthrough-works.md)**.
+  (our RTL8156 is an `-AD` one). Confirmed: our burned RTL8156 came up under the laptop's MAC on
+  Ubuntu, while an RTL8153 that isn't a recognised variant kept its own MAC.
 
 Because the capability sits in the hardware, network boot already sees the laptop's identity — which
 is what makes this useful for imaging and deployment, not just day-to-day docking.
 
 **How we found it.** We read the chip's registers directly over its USB-OCP interface (reproducible,
-cross-checked against the device revision) and decompiled the driver to see exactly which bit it
-tests.
+cross-checked against the device revision), decompiled the Windows driver to see exactly which bit it
+tests, and read the Linux driver's source for its gate.
 
 ---
 
 ## ⚠️ Safety & disclaimer
 
-- The burn is a **one-time, irreversible (OTP)** write. **Rehearse on a spare first** — a cheap USB
-  dongle uses the same Realtek chip, so it's the ideal practice target before an expensive dock.
-- It only ever writes into confirmed-blank space; **factory data is never touched**, and a failed or
-  interrupted burn leaves the card unharmed.
+- The burn is a **one-time, irreversible (OTP)** write. **Rehearse on a spare first** — a cheap
+  RTL8156 dongle is the ideal practice target before an expensive dock.
+- It only ever writes into confirmed-blank space, **never over factory data**, and reads the record
+  back to verify it.
 - Keep the USB connection stable during the burn.
 - **It worked for us, but you use this entirely at your own risk — no warranty of any kind.** See
   [LICENSE](LICENSE).
@@ -222,7 +217,7 @@ card-inspector.ps1     the window (PowerShell / WinForms)
 tools/                 Python backend:
   diag.py                read registers (REV, USB_MISC, 0xCFDB) and the per-system verdict
   settings.py            read-only settings dump: efuse (RTL8156 and RTL8153 protocols) + SPI flash start
-  efuse.py               efuse dump / dry-run / burn (RTL8156-family efuse)
+  efuse.py               efuse dump / preview / burn (RTL8156-family efuse)
   rtldiag.py             unified DLL layer (classifies + drives the Realtek library)
   passthru.py            which marker each system checks -> the verdict (unit-tested)
   storage.py             where the settings live (unit-tested)
@@ -232,9 +227,8 @@ tests/                 regression tests  ->  python -m pytest
 dll/                   you place the Realtek diag DLL here (not shipped)
 ```
 
-It reads the `0xCFDB` byte over the chip's USB-OCP interface and, for the burn, drives the efuse
-controller with the library's register primitives — appending the autoload record and verifying it
-by reading it back.
+It reads `0xCFDB` over the chip's USB-OCP interface and, for the burn, drives the efuse controller
+with the library's register primitives — appending the record and verifying it by reading it back.
 
 ## Command line (optional)
 
@@ -242,10 +236,10 @@ The window is just a front end — the Python backend runs standalone (same Admi
 requirements), which is handy for scripting or a headless box:
 
 ```powershell
-python -I tools/diag.py  {InterfaceGuid}            # read REV, USB_MISC and 0xCFDB
+python -I tools/diag.py  {InterfaceGuid}            # read REV, USB_MISC and 0xCFDB, per-system verdict
 python -I tools/settings.py {InterfaceGuid}         # settings dump: efuse records + plain-words summary
 python -I tools/efuse.py {InterfaceGuid}            # dump the efuse (RTL8156 family)
-python -I tools/efuse.py {InterfaceGuid} --plan     # dry run: show what a burn would write
+python -I tools/efuse.py {InterfaceGuid} --plan     # preview: show what a burn would write
 python -I tools/efuse.py {InterfaceGuid} --burn     # burn 0xCFDB = 0x03   (irreversible)
 python -I tools/dll_list.py                         # list / classify the Realtek DLLs found
 ```
