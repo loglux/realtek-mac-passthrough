@@ -35,15 +35,16 @@ third column are what the drivers call those values — nothing is written in th
 | `USB_MISC_0` (`0xD81A`, 16 bit) | bits 15–9 and 7–5 (mask `0xFEE0`) | `0x1000`: bit 12 = 1, the rest 0 | **RTL8153-AD** *(Linux driver)* |
 | `USB_MISC_1` (`0xD81F`, 1 byte) | bit 2 / bit 0 | 1 | **RTL8153-BND** / **RTL8153-BD** *(Linux driver)* |
 
-`0xCFDB` is one byte — eight bits, each either 0 or 1; only the two lowest matter here. The last two
-rows are what we read on real cards:
+`0xCFDB` is one byte — eight bits, each either 0 or 1; only the two lowest matter here:
 
 | bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | meaning | — | — | — | — | — | — | **AUX MAC clone** | **RT MAC clone** |
-| **`0x01`** — WAVLINK dock, RTL8156 dongle, as shipped | 0 | 0 | 0 | 0 | 0 | 0 | **0** | 1 |
-| **`0x03`** — UGREEN as shipped; WAVLINK dock, dongle after RtlPassthru | 0 | 0 | 0 | 0 | 0 | 0 | **1** | 1 |
+| for pass-through | — | — | — | — | — | — | **1** | **1** |
+
+Bit 1 is what Windows and pre-boot need, bit 0 what Linux needs on `-AD` chips; the other bits are
+not checked. RtlPassthru sets both — `0x03`.
 
 Where the values come from:
 
