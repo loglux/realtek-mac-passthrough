@@ -28,7 +28,7 @@ Side 1 is the laptop's job. **This page is about side 2 — because that is wher
 The chip holds only **numbers in its registers**; the drivers read them over USB. The names in the
 third column are what the drivers call those values — nothing is written in the chip.
 
-| register | bits checked | value that counts | known as |
+| Register | Bits checked | Value that counts | Known as |
 |---|---|---|---|
 | `0xCFDB` (1 byte) | bit 1 | 1 | **AUX MAC clone** *(Windows driver)* |
 | `0xCFDB` (1 byte) | bit 0 | 1 | **RT MAC clone** *(Windows driver)*, `PASS_THRU` *(Linux driver)* |
@@ -37,13 +37,13 @@ third column are what the drivers call those values — nothing is written in th
 
 `0xCFDB` is one byte — eight bits, each either 0 or 1; only the two lowest matter here:
 
-| bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
+| Bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
+| Hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | Windows driver | — | — | — | — | — | — | AUX MAC clone | RT MAC clone |
 | Realtek | — | — | — | — | — | — | `SELF_POWER` | `DOCKING` |
 | Linux driver | — | — | — | — | — | — | — | `PASS_THRU` |
-| **required value** | — | — | — | — | — | — | **1** | **1** |
+| **Required value** | — | — | — | — | — | — | **1** | **1** |
 
 Bit 1 is what Windows and pre-boot need, bit 0 what Linux needs on `-AD` chips; the other bits are
 not checked. RtlPassthru sets both — `0x03`.
@@ -146,7 +146,7 @@ In plain words:
 
 ## Side by side
 
-| register | bits checked | value that counts | Windows | Pre-boot / PXE | Linux |
+| Register | Bits checked | Value that counts | Windows | Pre-boot / PXE | Linux |
 |---|---|---|:---:|:---:|:---:|
 | `0xCFDB` | bit 1 *(AUX MAC clone)* | 1 | required | required | not used |
 | `0xCFDB` | bit 0 *(RT MAC clone / `PASS_THRU`)* | 1 | not used | not enough alone | required if the `-AD` test matches |

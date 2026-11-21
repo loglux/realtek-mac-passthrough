@@ -30,7 +30,7 @@ Pass-through needs two things: the laptop offers its MAC (the BIOS option publis
 `_AUXMAC_`), and the driver accepts it for this dock. The driver decides by reading registers in the
 dock's Realtek chip — and **each system requires different values:**
 
-| register | bits checked | value that counts | Windows | Pre-boot / PXE | Linux | known as |
+| Register | Bits checked | Value that counts | Windows | Pre-boot / PXE | Linux | Known as |
 |---|---|---|:---:|:---:|:---:|---|
 | `0xCFDB` (1 byte) | bit 1 | 1 | required | required | not used | AUX MAC clone ¹, `SELF_POWER` ² |
 | `0xCFDB` (1 byte) | bit 0 | 1 | not used | not enough alone | required if the `-AD` test matches | RT MAC clone ¹, `DOCKING` ², `PASS_THRU` ³ |
@@ -46,13 +46,13 @@ itself holds only the numbers.
 `0xCFDB` is one byte — eight bits, numbered 7 to 0, each either 0 or 1. Only the two lowest matter
 for pass-through:
 
-| bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
+| Bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
+| Hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | Windows driver | — | — | — | — | — | — | AUX MAC clone | RT MAC clone |
 | Realtek | — | — | — | — | — | — | `SELF_POWER` | `DOCKING` |
 | Linux driver | — | — | — | — | — | — | — | `PASS_THRU` |
-| **required value** | — | — | — | — | — | — | **1** | **1** |
+| **Required value** | — | — | — | — | — | — | **1** | **1** |
 
 Bit 1 is what Windows and pre-boot need, bit 0 what Linux needs on `-AD` chips; the other bits are
 not checked. RtlPassthru sets both — `0x03`.
@@ -78,7 +78,7 @@ first and writes only after you confirm.
 
 ### What it can do on which chip
 
-| chip | reads & diagnoses | burns `0xCFDB = 0x03` |
+| Chip | Reads & diagnoses | Burns `0xCFDB = 0x03` |
 |---|:---:|:---:|
 | **RTL8156** (2.5 G) | ✓ | ✓ |
 | **RTL8153** (1 G) | ✓ | — its efuse uses a different protocol; read-only for now |
