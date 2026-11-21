@@ -33,19 +33,19 @@ condition; "—" means not checked:
 
 | System | `0xCFDB` bit 1 | `0xCFDB` bit 0 | `USB_MISC_0 & 0xFEE0` | `USB_MISC_1` bit 2 or bit 0 |
 |---|:---:|:---:|:---:|:---:|
-| **Windows** | **1** | **1** \* | — | — |
-| **Pre-boot / PXE** | **1** | **1** \* | — | — |
+| **Windows** | **1** | optional ¹ | — | — |
+| **Pre-boot / PXE** | **1** | **1** ² | — | — |
 | **Linux** — chip the driver calls "RTL8153-AD" | — | **1** | **`0x1000`** | — |
 | **Linux** — chip it calls "RTL8153-BND" / "-BD" | — | — | — | **1** |
 
 Linux needs **any one** of its two rows; on a Lenovo device (recognised by its USB vendor ID) it
 skips these checks altogether.
 
-\* Possibly needed, possibly not: there was no way to test with bit 0 = 0. On a Dell, `0x01`
-(bit 0 only) gave no pass-through and `0x03` (bits 0 and 1) did.
+¹ The Windows driver accepts bit 1 alone or bits 1 and 0 together.
+² Tested only with bits 1 and 0 both set; bit 1 alone was not tried.
 
-**Why both bits:** Windows and pre-boot need bit 1 and work with bit 0 set as well; Linux on an "-AD"
-chip needs bit 0. Writing `0x03` covers all of them in one burn.
+**Why both bits:** Linux on an "-AD" chip needs bit 0, and pre-boot was proven with both. Writing
+`0x03` covers all of them in one burn.
 
 ### The `0xCFDB` byte
 
