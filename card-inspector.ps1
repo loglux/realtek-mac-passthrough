@@ -91,6 +91,24 @@ function Demo-Py($script, $argline) {
       if ($green) { $recs += "  0x40: write [40 CF DB 03] -> reg 0xCFDB  (SW_FEATURE (MAC_CLONE/pass-through))   <<<" }
       return (($rows + 'records:' + $recs) -join "`r`n")
     }
+    'settings.py' {
+      # demo chip = efuse-only RTL8156 with sample data (made-up MAC); green = our record appended at 0x040
+      $lines = @(
+        "GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)",
+        "STORAGE efuse = responding",
+        "STORAGE flash = none",
+        "",
+        "=== EFUSE (first 256 bytes, one-time programmable) ===",
+        "0x000: 45 c0 00 00 11 22 33 44 66 40 cf db 01 ff ff ff  |E...`"3Df@......|",
+        "0x010: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|",
+        "records:",
+        "  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)",
+        "  0x009: write [01] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)"
+      )
+      if ($green) { $lines += "  0x040: write [03] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)" }
+      $lines += ("  => 0xCFDB ends up as 0x{0} (the last record wins)" -f $(if ($green) { '03' } else { '01' }))
+      return ($lines -join "`r`n")
+    }
   }
   return ''
 }
@@ -117,13 +135,6 @@ function Read-CFDB($guid) {
   if ($m.Success) { return [Convert]::ToInt32($m.Groups[1].Value,16) } else { return -1 }
 }
 
-function Split-Efuse($out) {
-  # efuse.py already decodes the records (efuse_core.parse_autoload_records, covered by pytest);
-  # the GUI only splits its output. Hex rows: "0xNNN: ..".  Record lines: "  0xNN: write [..] -> reg 0x..".
-  $hex  = ($out -split "`r?`n" | Where-Object { $_ -match '^0x[0-9A-Fa-f]{3}:' }) -join "`r`n"
-  $recs = ($out -split "`r?`n" | Where-Object { $_ -match '^\s+0x[0-9A-Fa-f]+:\s+write' }) -join "`r`n"
-  return @{ Hex = $hex; Records = $recs }
-}
 
 # ---------- UI ----------
 function Style-Btn($b,[bool]$primary) {
@@ -253,7 +264,7 @@ function Add-Txt($rtb,$text,$color,[bool]$bold,$size,[bool]$mono=$false) {
   $rtb.AppendText($text)
 }
 
-$btnEf = New-Object Windows.Forms.Button; $btnEf.Text='Show efuse dump'; $btnEf.Location='16,496'; $btnEf.Size='190,30'
+$btnEf = New-Object Windows.Forms.Button; $btnEf.Text='Show settings dump'; $btnEf.Location='16,496'; $btnEf.Size='190,30'
 Style-Btn $btnEf $false
 $btnSave = New-Object Windows.Forms.Button; $btnSave.Text='Save report'; $btnSave.Location='216,496'; $btnSave.Size='150,30'
 Style-Btn $btnSave $false
@@ -449,22 +460,20 @@ function Read-Card {
 function Show-Efuse {
   if ($cmb.SelectedIndex -lt 0) { return }
   $c = $script:cards[$cmb.SelectedIndex]
-  $ef.Visible=$true; $ef.Text='reading efuse...'; $form.Refresh()
-  $out = Run-Py 'efuse.py' "`"$($c.Guid)`" 160 --dll $(Burn-Dll)"
-  $s = Split-Efuse $out
-  $decoded = if ($s.Records) { $s.Records } else { '(no efuse records - run as admin? card connected?)' }
-  $ef.Text = "DECODED  (each line = a value the chip writes into a register at power-on; <<< marks the pass-through byte):`r`n$decoded`r`n`r`nRAW HEX:`r`n$($s.Hex)"
+  $ef.Visible=$true; $ef.Text='reading the card''s settings (efuse and/or SPI flash)...'; $form.Refresh()
+  # settings.py works out where this card keeps its settings (efuse, SPI flash, or both) and dumps each,
+  # with decoded records - so a chip without efuse no longer hangs the window.
+  $out = Run-Py 'settings.py' "`"$($c.Guid)`" --dll $(Burn-Dll)"
+  $ef.Text = if ($out) { ($out -replace "`r?`n", "`r`n") } else { '(nothing read - run as admin? card connected?)' }
 }
 
 function Save-Report {
   if (-not $script:rpt) { Read-Card }
   if (-not $script:rpt) { Set-Status 'Nothing to save - read a card first.' $C_AMBER; return }
   $r = $script:rpt
-  Set-Status 'Building report (reading efuse)...' $C_TEXT
-  $efout = Run-Py 'efuse.py' "`"$($r.Guid)`" 160 --dll $(Burn-Dll)"
-  $s = Split-Efuse $efout
-  $decoded = if ($s.Records) { $s.Records } else { '(efuse not read)' }
-  $hex = $s.Hex
+  Set-Status 'Building report (reading the card''s settings)...' $C_TEXT
+  $stout = Run-Py 'settings.py' "`"$($r.Guid)`" --dll $(Burn-Dll)"
+  $settings = if ($stout) { ($stout -replace "`r?`n", "`r`n") } else { '(settings not read)' }
   $verdict = if ($r.Pass) { 'SUPPORTS MAC pass-through - no action needed.' } else { 'NOT supported - AUX-clone bit (0xCFDB bit1) missing; needs an efuse burn.' }
   $txt = @"
 RtlPassthru $Version - report
@@ -485,11 +494,8 @@ PASS-THROUGH         : $($r.Layers)
 
 VERDICT    : $verdict
 
---- efuse (decoded) ---
-$decoded
-
---- efuse (raw hex) ---
-$hex
+--- settings store(s): efuse and/or SPI flash, raw + decoded ---
+$settings
 "@
   $dlg = New-Object Windows.Forms.SaveFileDialog
   $dlg.Filter = 'Text file (*.txt)|*.txt'

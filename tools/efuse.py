@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
 from efuse_core import build_record, find_append_point, parse_autoload_records, record_dword
-from rtldiag import RtlDiag
+from rtldiag import EfuseUnavailable, RtlDiag
 
 REG = 0xCFDB
 NAMES = {0xC000: "IDR/MAC", 0xCFDB: "SW_FEATURE (MAC_CLONE/pass-through)", 0xD81A: "USB_MISC_0", 0xD81F: "USB_MISC_1"}
@@ -33,10 +33,14 @@ def _dump(c, nbytes):
         print(f"0x{i:03X}: {hexs:<47}  |{text}|")
     print("records:")
     for r in parse_autoload_records(data):
+        dhex = " ".join(f"{b:02X}" for b in r["data"])
+        if r["kind"] != "reg":
+            print(f"  0x{r['at']:02X}: other command [{dhex}]" if r["kind"] == "raw"
+                  else f"  0x{r['at']:02X}: unknown record type - stopped")
+            continue
         nm = NAMES.get(r["reg"], "")
         tag = f"  ({nm})" if nm else ""
         star = "   <<<" if r["reg"] == REG else ""
-        dhex = " ".join(f"{b:02X}" for b in r["data"])
         print(f"  0x{r['at']:02X}: write [{dhex}] -> reg 0x{r['reg']:04X}{tag}{star}")
 
 
@@ -99,6 +103,9 @@ def main(argv):
             ok = back == dwdata
             print("RESULT: " + ("OK, matches" if ok else f"MISMATCH: 0x{back:08X} != 0x{dwdata:08X}"))
             return 0 if ok else 1
+        except EfuseUnavailable as e:
+            print(f"EFUSE UNAVAILABLE: {e}")
+            return 3
         finally:
             c.efuse_disable()
             c.pg_leave()

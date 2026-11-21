@@ -173,6 +173,10 @@ def resolve_dll(which: str) -> str:
     return which
 
 
+class EfuseUnavailable(OSError):
+    """The efuse controller never answered - the chip keeps its settings somewhere else (e.g. SPI flash)."""
+
+
 class RtlDiag:
     """Open a Realtek USB card through the diag DLL and read/write its registers and efuse.
 
@@ -304,37 +308,53 @@ class RtlDiag:
     def _wb(self, reg, val):
         self.dwrite(reg, 1, bytes([val & 0xFF]))
 
-    def flash_id(self):
-        """(storage-status byte at 0xDC00, 3-byte JEDEC ID). An ID of 00 00 00 / FF FF FF = no SPI flash."""
-        dc00 = self._rb(0xDC00)
-        pg = self.pg_enter()                               # the SPI interface only answers in PG mode
-        e84c, e81c = self._rb(0xE84C), self._rb(0xE81C)
-        out = []
-        try:
-            self._wb(0xE84C, e84c | 0x10)
-            self._wb(0xE81C, e81c | 0xC0)                 # enable the SPI interface
-            self._wb(0xE81D, 0xC0)
-            self._wb(0xE81D, 0x80)                         # chip select
-            c = 0x9F
-            for _ in range(8):                             # command, MSB first
+    def _spi(self, cmd, nread=0, addr=None):
+        """One SPI transaction: select, send command (+ 24-bit address), clock in `nread` bytes, deselect."""
+        self._wb(0xE81D, 0xC0)
+        self._wb(0xE81D, 0x80)                             # chip select
+        out_bytes = [cmd]
+        if addr is not None:
+            out_bytes += [(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF]
+        for c in out_bytes:                                # MSB first
+            for _ in range(8):
                 di = ((c >> 7) & 1) << 4
                 self._wb(0xE81D, di | 0x80)
                 self._wb(0xE81D, di | 0xA0)
                 c = (c << 1) & 0xFF
-            for _ in range(3):                             # manufacturer, type, capacity
-                v = 0
-                for _ in range(8):
-                    self._wb(0xE81D, 0x80)
-                    self._wb(0xE81D, 0xA0)
-                    v = (v << 1) | (1 if self._rb(0xE81D) & 0x08 else 0)
-                out.append(v)
-            self._wb(0xE81D, 0xC0)                         # deselect
+        out = []
+        for _ in range(nread):
+            v = 0
+            for _ in range(8):
+                self._wb(0xE81D, 0x80)
+                self._wb(0xE81D, 0xA0)
+                v = (v << 1) | (1 if self._rb(0xE81D) & 0x08 else 0)
+            out.append(v)
+        self._wb(0xE81D, 0xC0)                             # deselect
+        return bytes(out)
+
+    def _flash_session(self, fn):
+        """Run fn() with the SPI interface enabled (PG mode); put the two enable registers back afterwards."""
+        pg = self.pg_enter()                               # the SPI interface only answers in PG mode
+        e84c, e81c = self._rb(0xE84C), self._rb(0xE81C)
+        try:
+            self._wb(0xE84C, e84c | 0x10)
+            self._wb(0xE81C, e81c | 0xC0)                 # enable the SPI interface
+            return fn()
         finally:
             self._wb(0xE81C, e81c)
             self._wb(0xE84C, e84c)
             if pg == 1:
                 self.pg_leave()
-        return dc00, bytes(out)
+
+    def flash_id(self):
+        """(storage-status byte at 0xDC00, 3-byte JEDEC ID). An ID of 00 00 00 / FF FF FF = no SPI flash."""
+        dc00 = self._rb(0xDC00)
+        return dc00, self._flash_session(lambda: self._spi(0x9F, 3))
+
+    def flash_read(self, addr, n):
+        """Read n bytes of the SPI flash from addr (command 0x03). Read-only. Bit-banged, so keep n small
+        (the settings area is the first few hundred bytes; a full 2 MB read would take hours)."""
+        return self._flash_session(lambda: self._spi(0x03, n, addr))
 
     # --- PG mode + efuse ---
     def pg_enter(self):
@@ -352,22 +372,29 @@ class RtlDiag:
         v = self.dread(0xE85B, 1)[0]
         self.dwrite(0xE85B, 1, bytes([v & 0x3B]))
 
+    # A healthy efuse controller clears its busy bit within a few polls. Some chips (e.g. an RTL8153 that keeps
+    # its settings in SPI flash) never clear it - without a limit the read looked like a hang (64 dwords x
+    # 10000 polls). So: bounded poll, and a clear error on the first timeout instead of grinding on.
+    EFUSE_POLLS = 2000
+
+    def _efuse_wait(self, busy_bit):
+        for _ in range(self.EFUSE_POLLS):
+            c = int.from_bytes(self.dread(0xDD04, 2), "little")
+            if not (c & busy_bit):
+                return c
+        raise EfuseUnavailable(
+            "efuse controller not responding (busy bit never clears) - this chip has no usable "
+            "efuse; its settings live elsewhere (e.g. SPI flash). Nothing was written.")
+
     def efuse_read_dword(self, dw):
         self.dwrite(0xDD04, 2, ((dw & 0x1ff) | 0x8000).to_bytes(2, "little"))
-        for _ in range(10000):
-            if not (int.from_bytes(self.dread(0xDD04, 2), "little") & 0x8000):
-                break
+        self._efuse_wait(0x8000)
         return int.from_bytes(self.dread(0xDD00, 4), "little")
 
     def efuse_write_dword(self, dw, dwdata):
         self.dwrite(0xDD00, 4, dwdata.to_bytes(4, "little"))
         self.dwrite(0xDD04, 2, ((dw & 0x1ff) | 0x4000).to_bytes(2, "little"))
-        c = 0x4000
-        for _ in range(10000):
-            c = int.from_bytes(self.dread(0xDD04, 2), "little")
-            if not (c & 0x4000):
-                break
-        return c
+        return self._efuse_wait(0x4000)
 
     def efuse_dump(self, nbytes=256):
         data = bytearray()

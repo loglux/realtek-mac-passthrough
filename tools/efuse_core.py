@@ -59,11 +59,35 @@ def find_append_point(data: bytes) -> dict:
     }
 
 
-def parse_autoload_records(data: bytes) -> list:
-    """Walk efuse autoload records: [hdr][offset BE][data...]. 0xFF = End-Of-Autoload, 0x00 = padding/skip.
+FLASH_RECORDS_START = 0x008   # SPI flash: an 8-byte header, then autoload records until the first 0xFF
 
-    hdr: len = (hdr & 0x1F) + 1, type = hdr & 0xE0 (0xE0 = DASH, 4-byte offset; otherwise 2-byte offset).
-    Returns a list of {'at': start position, 'reg': register offset, 'data': bytes}.
+
+def parse_flash_records(data: bytes) -> list:
+    """Records in an SPI-flash settings area: skip the 8-byte header, then the same grammar as efuse.
+
+    The header is left as is (the chip scans to the first 0xFF, it does not read a length from it).
+    'at' positions are absolute flash offsets.
+    """
+    recs = parse_autoload_records(data[FLASH_RECORDS_START:])
+    for r in recs:
+        r["at"] += FLASH_RECORDS_START
+    return recs
+
+
+# Record kinds by the top 3 bits of the first byte - the classifier in RTUNicPG (FUN_14005eba0):
+#   0x20 / 0x40  register write: [hdr][reg 2B BE][data], data length (hdr & 0x1F) + 1   (PLA / USB space)
+#   0xE0         DASH register write: [hdr][reg 4B BE][data], length (hdr & 0x0F) + 1
+#   0x60 / 0x80 / 0xA0   other autoload commands of a fixed size (4 / 5 / 2 bytes) - not decoded here
+#   0xC0         size not known -> parsing stops there rather than guessing
+FIXED_SIZE = {0x60: 4, 0x80: 5, 0xA0: 2}
+
+
+def parse_autoload_records(data: bytes) -> list:
+    """Walk autoload records. 0xFF = End-Of-Autoload, 0x00 = padding/skip.
+
+    Returns a list of {'at', 'kind', 'reg', 'data'}: kind 'reg' = a register write (reg = its offset),
+    'raw' = a fixed-size command we do not decode (reg None, data = the whole record), 'unknown' = a type
+    whose size is not known - it is the last item and parsing stopped there.
     """
     recs = []
     i = 0
@@ -75,19 +99,28 @@ def parse_autoload_records(data: bytes) -> list:
         if hdr == 0x00:
             i += 1
             continue
-        ln = (hdr & 0x1F) + 1
-        if (hdr & 0xE0) == 0xE0:  # DASH: 4-byte offset
-            if i + 5 + ln > n:
-                break
-            reg = int.from_bytes(data[i + 1:i + 5], "big")
-            payload = data[i + 5:i + 5 + ln]
-            nxt = i + 5 + ln
-        else:  # USB-OCP / PLA-OCP: 2-byte offset
+        t = hdr & 0xE0
+        if t in (0x20, 0x40):
+            ln = (hdr & 0x1F) + 1
             if i + 3 + ln > n:
                 break
-            reg = int.from_bytes(data[i + 1:i + 3], "big")
-            payload = data[i + 3:i + 3 + ln]
-            nxt = i + 3 + ln
-        recs.append({"at": i, "reg": reg, "data": bytes(payload)})
-        i = nxt
+            recs.append({"at": i, "kind": "reg", "reg": int.from_bytes(data[i + 1:i + 3], "big"),
+                         "data": bytes(data[i + 3:i + 3 + ln])})
+            i += 3 + ln
+        elif t == 0xE0:
+            ln = (hdr & 0x0F) + 1
+            if i + 5 + ln > n:
+                break
+            recs.append({"at": i, "kind": "reg", "reg": int.from_bytes(data[i + 1:i + 5], "big"),
+                         "data": bytes(data[i + 5:i + 5 + ln])})
+            i += 5 + ln
+        elif t in FIXED_SIZE:
+            size = FIXED_SIZE[t]
+            if i + size > n:
+                break
+            recs.append({"at": i, "kind": "raw", "reg": None, "data": bytes(data[i:i + size])})
+            i += size
+        else:
+            recs.append({"at": i, "kind": "unknown", "reg": None, "data": bytes(data[i:i + 1])})
+            break
     return recs
