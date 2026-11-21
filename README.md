@@ -42,6 +42,7 @@ Linux needs **any one** of its two rows; on a Lenovo device (recognised by its U
 skips these checks altogether.
 
 \* Optional: the Windows driver accepts bit 1 alone or bits 1 and 0 together.
+
 \*\* Tested only with bits 1 and 0 both set; bit 1 alone was not tried.
 
 **Why both bits:** Linux on an "-AD" chip needs bit 0, and pre-boot was proven with both. Writing
