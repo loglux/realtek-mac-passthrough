@@ -104,7 +104,7 @@ The key points:
 
 ## The one thing to take away
 
-Line the layers up against the two markers and the puzzle dissolves:
+Line the layers up against the card's markers and the puzzle dissolves:
 
 | the card's marker | Windows | PXE | Linux |
 |---|:---:|:---:|:---:|
