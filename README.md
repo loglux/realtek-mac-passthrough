@@ -37,7 +37,6 @@ condition; "—" means not checked:
 | **Pre-boot / PXE** ¹ | **1** | — | — | — |
 | **Linux** — chip the driver calls "RTL8153-AD" | — | **1** | **`0x1000`** | — |
 | **Linux** — chip it calls "RTL8153-BND" / "-BD" | — | — | — | **1** |
-| *RtlPassthru writes* | *1* | *1* | *not changed* | *not changed* |
 
 Linux needs **any one** of its two rows; on a Lenovo device (recognised by its USB vendor ID) it
 skips these checks altogether.
