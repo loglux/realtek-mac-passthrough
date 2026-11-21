@@ -12,3 +12,6 @@ __pycache__/
 # local scratch
 *.tmp
 *.log
+
+# old registry-recipe utility: dropped from the repo, kept locally
+legacy/
