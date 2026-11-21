@@ -28,18 +28,25 @@ The good news is that RtlPassthru can burn it in.
 
 Pass-through needs two things: the laptop offers its MAC (the BIOS option publishes it as
 `_AUXMAC_`), and the driver accepts it for this dock. The driver decides by reading registers in the
-dock's Realtek chip — and **each system requires different values:**
+dock's Realtek chip — and **each system requires different values.** One row is one complete
+condition; "—" means not checked:
 
-| Register | Bits checked | Value that counts | Windows | Pre-boot / PXE | Linux | Known as |
-|---|---|---|:---:|:---:|:---:|---|
-| `0xCFDB` (1 byte) | bit 1 | 1 | required | required | not used | AUX MAC clone ¹, `SELF_POWER` ² |
-| `0xCFDB` (1 byte) | bit 0 | 1 | not used | not enough alone | required if the `-AD` test matches | RT MAC clone ¹, `DOCKING` ², `PASS_THRU` ³ |
-| `USB_MISC_0` (`0xD81A`, 16 bit) | bits 15–9 and 7–5 (mask `0xFEE0`) | `0x1000`: bit 12 = 1, the rest 0 | not used | not used | this, **or** … | RTL8153-AD ³ |
-| `USB_MISC_1` (`0xD81F`, 1 byte) | bit 2, bit 0 | either = 1 | not used | not used | … this | RTL8153-BND / -BD ³ |
+| System | `0xCFDB` bit 1 | `0xCFDB` bit 0 | `USB_MISC_0 & 0xFEE0` | `USB_MISC_1` bit 2 or bit 0 |
+|---|:---:|:---:|:---:|:---:|
+| **Windows** | **1** | — | — | — |
+| **Pre-boot / PXE** ¹ | **1** | — | — | — |
+| **Linux** — chip the driver calls "RTL8153-AD" | — | **1** | **`0x1000`** | — |
+| **Linux** — chip it calls "RTL8153-BND" / "-BD" | — | — | — | **1** |
+| *RtlPassthru writes* | *1* | *1* | *not changed* | *not changed* |
 
-Names: ¹ Windows Realtek driver — its log messages *"Is AUX / RT MAC clone support system"*
-(`rtump64x64.sys`, `NIC_QuerySpecificHwCaps`); ² Realtek — its configuration fields; ³ Linux driver `drivers/net/usb/r8152.c` — its defines and comments. The chip
-itself holds only the numbers.
+Linux needs **any one** of its two rows; on a Lenovo device (recognised by its USB vendor ID) it
+skips these checks altogether.
+
+¹ Tested on a Dell: `0x01` (bit 0 only) — no; `0x03` (bits 0 and 1) — yes. Bit 1 alone was not
+tested.
+
+**Why both bits:** Windows and pre-boot need bit 1; Linux on an "-AD" chip needs bit 0. Writing
+`0x03` covers all of them in one burn.
 
 ### The `0xCFDB` byte
 
@@ -54,13 +61,13 @@ for pass-through:
 | Linux driver | — | — | — | — | — | — | — | `PASS_THRU` |
 | **Required value** | — | — | — | — | — | — | **1** | **1** |
 
-Bit 1 is what Windows and pre-boot need, bit 0 what Linux needs on `-AD` chips; the other bits are
-not checked. RtlPassthru sets both — `0x03`.
+The other bits are not checked. `0xCFDB` is filled at every power-on: the chip's built-in default,
+then any setting records in its efuse on top. The `USB_MISC` registers are set at the factory.
 
-- `0xCFDB` is filled at every power-on: the chip's built-in default, then any setting records in its
-  efuse on top. The `USB_MISC` registers are set at the factory.
-- *Not enough alone*: `0x01` (bit 0 only) did not give pass-through at pre-boot; `0x03` did.
-- Linux skips these checks on Lenovo devices (recognised by their USB vendor ID).
+Where the names come from — the chip itself holds only the numbers: **Windows driver** — its log
+messages *"Is AUX / RT MAC clone support system"* (`rtump64x64.sys`, `NIC_QuerySpecificHwCaps`);
+**Realtek** — its configuration fields; **Linux driver** — the defines and comments in
+`drivers/net/usb/r8152.c`, which also name the variants "RTL8153-AD", "-BND" and "-BD".
 
 **What RtlPassthru does:** it reads these registers and shows, per system, whether pass-through will
 work. If bit 1 of `0xCFDB` is missing, it burns `0xCFDB = 0x03` (both bits) into the chip's efuse. It
