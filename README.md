@@ -27,19 +27,23 @@ The good news is that RtlPassthru can burn it in.
 ## How it works
 
 Pass-through needs two things: the laptop offers its MAC (the BIOS option publishes it as
-`_AUXMAC_`), and the dock's card is marked as allowed to take it. The card carries three such marks,
-and **each system checks its own:**
+`_AUXMAC_`), and the dock's Realtek chip reports that it may take it. The chip reports that through
+values in its registers, which the driver reads over USB — and **each system checks different ones:**
 
-| mark on the card | Windows | Pre-boot / PXE | Linux |
-|---|:---:|:---:|:---:|
-| **AUX MAC clone bit** — `0xCFDB` bit 1 | required | required | not used |
-| **RT MAC clone bit** — `0xCFDB` bit 0 | not used | not enough alone | required on `-AD` chips |
-| **chip variant** — `-AD`, `-BND`, `-BD` or Lenovo | not used | not used | required |
+| value the driver reads from the chip | register | Windows | Pre-boot / PXE | Linux |
+|---|---|:---:|:---:|:---:|
+| **AUX MAC clone bit** | `0xCFDB` bit 1 | required | required | not used |
+| **RT MAC clone bit** | `0xCFDB` bit 0 | not used | not enough alone | required on `-AD` chips ¹ |
+| **chip variant** `-AD`, `-BND` or `-BD` | `USB_MISC_0` (`0xD81A`), `USB_MISC_1` (`0xD81F`) | not used | not used | required ¹ |
 
-*"Not enough alone"*: a card with only bit 0 set (`0x01`) did not take the laptop's MAC at pre-boot;
-with both bits (`0x03`) it did.
+- `0xCFDB` is filled at every power-on: the chip's built-in default, then any setting records in its
+  efuse on top. The variant registers are set at the factory.
+- *Not enough alone*: a chip with only bit 0 set (`0x01`) did not take the laptop's MAC at pre-boot;
+  with both bits (`0x03`) it did.
+- ¹ Linux has one exception: on a **Lenovo**-branded device (recognised by its USB vendor ID) it skips
+  these checks and takes the MAC Lenovo's firmware offers.
 
-**What RtlPassthru does:** it reads all three marks and shows, per system, whether pass-through will
+**What RtlPassthru does:** it reads these values and shows, per system, whether pass-through will
 work. If the AUX MAC clone bit is missing, it burns `0xCFDB = 0x03` (both bits) into the chip's efuse.
 The chip variant is set at the factory; RtlPassthru shows it but cannot change it.
 Confirmed: a burned RTL8156 (an `-AD` chip) takes the laptop's MAC in Windows, at Dell pre-boot and on
@@ -136,7 +140,7 @@ Then:
 **Pick your adapter.** The card is read as soon as you select it. Three tiles answer the real
 question — **does pass-through work, and where:** **Windows**, **Pre-boot / PXE** and **Linux**,
 each green **WORKS** or red **NO**, with the reason underneath (the two screenshots at the top).
-Each system checks a different marker on the card, so the tiles can differ.
+Each system checks different values in the chip, so the tiles can differ.
 
 Below the tiles, **one action card** offers what fits *this* card:
 
@@ -153,7 +157,7 @@ Below the tiles, **one action card** offers what fits *this* card:
     tiles should turn green — and Linux too, if the chip is a variant Linux recognises.
 - **Nothing to do** — everything already works.
 - **Linux: not on this card** — Windows and pre-boot work, but Linux only accepts recognised chip
-  variants (`-AD`, `-BND`, `-BD` or Lenovo) and this chip isn't one. The tool says so plainly
+  variants (`-AD`, `-BND`, `-BD`) or Lenovo devices, and this card is neither. The tool says so plainly
   rather than offering a fix it can't prove.
 
   ![Linux not on this card](docs/img/05-linux-not-on-this-card.png)

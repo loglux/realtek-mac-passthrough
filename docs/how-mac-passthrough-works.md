@@ -46,9 +46,10 @@ These bits are settings: they can be burned into the chip's efuse, which is exac
 companion tool, RtlPassthru, does (it writes `0x03`, both bits).
 
 **Marker 2 — the chip variant, in the `USB_MISC` registers.**
-Separately, the chip records *which factory variant* it is — `RTL8153-AD`, `-BND`, `-BD`, or a
-Lenovo chip. This marker lives in the `USB_MISC` registers, which are **not** `0xCFDB`. It is set at
-the factory; RtlPassthru does not change it.
+Separately, the chip records *which factory variant* it is — `RTL8153-AD`, `-BND` or `-BD`. This
+marker lives in the `USB_MISC` registers, which are **not** `0xCFDB`. It is set at the factory;
+RtlPassthru does not change it. (Linux also accepts **Lenovo**-branded devices, but those it recognises
+by their USB vendor ID, not by a register.)
 
 Keep these two apart. The next section is entirely about which layer reads which one.
 
@@ -98,7 +99,7 @@ The key points:
 
 - Linux keys on the **chip variant marker**, which lives in the `USB_MISC_0` / `USB_MISC_1`
   registers — a *different* register from `0xCFDB`.
-- A chip that is **not** a recognised variant (`-AD`, `-BND`, `-BD`, or a Lenovo chip) is rejected
+- A chip that is **not** a recognised variant (`-AD`, `-BND`, `-BD`), on a device that isn't Lenovo's, is rejected
   **even if its `0xCFDB` AUX bit is set.** The driver never gets far enough to look at that bit.
 - Only inside the `-AD` branch does Linux *also* check an efuse bit (`0xCFDB` bit 0), and only
   *after* the variant marker has already matched. For the `-BND` / `-BD` variants, the matching
@@ -110,14 +111,16 @@ The key points:
 
 Line the layers up against the card's markers and the puzzle dissolves:
 
-| mark on the card | Windows | Pre-boot / PXE | Linux |
-|---|:---:|:---:|:---:|
-| **AUX MAC clone bit** — `0xCFDB` bit 1 | required | required | not used |
-| **RT MAC clone bit** — `0xCFDB` bit 0 (`PASS_THRU` in Linux) | not used | not enough alone | required on `-AD` chips |
-| **chip variant** — `-AD`, `-BND`, `-BD` or Lenovo | not used | not used | required |
+| value the driver reads from the chip | register | Windows | Pre-boot / PXE | Linux |
+|---|---|:---:|:---:|:---:|
+| **AUX MAC clone bit** | `0xCFDB` bit 1 | required | required | not used |
+| **RT MAC clone bit** (`PASS_THRU` in Linux) | `0xCFDB` bit 0 | not used | not enough alone | required on `-AD` chips ¹ |
+| **chip variant** `-AD`, `-BND` or `-BD` | `USB_MISC_0` (`0xD81A`), `USB_MISC_1` (`0xD81F`) | not used | not used | required ¹ |
 
-*"Not enough alone"*: a card with only bit 0 set (`0x01`) did not take the laptop's MAC at pre-boot;
-with both bits (`0x03`) it did.
+- *Not enough alone*: a chip with only bit 0 set (`0x01`) did not take the laptop's MAC at pre-boot;
+  with both bits (`0x03`) it did.
+- ¹ Linux has one exception: on a **Lenovo**-branded device (recognised by its USB vendor ID) it skips
+  these checks and reads Lenovo's `\MACA` instead.
 
 **Windows and PXE look at the AUX bit; Linux looks at the chip variant.** They are checking
 *different markers*, so the same card can be accepted by one system and refused by another. Nothing
@@ -127,7 +130,7 @@ Three cases make it concrete:
 
 - **Only the AUX bit set** (a generic chip, burned) → **Windows and PXE: yes. Linux: no** (it is
   not a recognised variant).
-- **Only a recognised variant** (a factory `-AD` / `-BND` / `-BD` / Lenovo chip, AUX bit off — on an
+- **Only a recognised variant** (a factory `-AD` / `-BND` / `-BD` chip or a Lenovo device, AUX bit off — on an
   `-AD` chip, with bit 0 set) → **Linux: yes. Windows and PXE: no** (no AUX bit to read).
 - **Both** (a recognised variant *and* the AUX bit set) → **works everywhere.**
 
@@ -141,7 +144,8 @@ The variants Linux looks for are **factory SKUs of the Realtek chip**, not user 
   well as the variant marker.
 - **RTL8153-BND / -BD** — later variants that pass on the variant marker alone, with no efuse bit
   required.
-- **Lenovo chips** — recognised by their USB vendor ID.
+- **Lenovo devices** — not a chip variant: Linux recognises them by their USB vendor ID and reads
+  Lenovo's own `\MACA` instead.
 
 The variant marker sits in the `USB_MISC` registers and is set at the factory. A generic, unbranded
 Realtek NIC is usually **none** of these — which is exactly why
