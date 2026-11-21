@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling mod
 
 from rtldiag import RtlDiag
 from passthru import format_lines, verdict
+from storage import describe as describe_storage
 
 
 def main(argv):
@@ -35,6 +36,12 @@ def main(argv):
         print(f"  0xCFDB EFUSE(PASS_THRU) = 0x{cfdb:02X}   bit0(RT-clone)={cfdb & 1}  bit1(AUX-clone)={(cfdb >> 1) & 1}")
         for line in format_lines(verdict(m0, m1, cfdb, vid)):
             print(line)
+        try:
+            dc00, jedec = c.flash_id()
+            print(f"  storage DC00 = 0x{dc00:02X}   SPI flash ID = {jedec.hex(' ').upper()}")
+            print(f"CONFIG STORAGE = {describe_storage(jedec, dc00)}")
+        except Exception as e:     # never let the storage probe break the register read
+            print(f"CONFIG STORAGE = unknown (probe failed: {e})")
     finally:
         c.close()
     return 0

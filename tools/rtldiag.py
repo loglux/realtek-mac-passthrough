@@ -292,6 +292,50 @@ class RtlDiag:
         self._Bcd(ctypes.cast(self.ctx, ctypes.c_void_p), ctypes.byref(rev))
         return rev.value & 0xffff
 
+    # --- SPI flash identification (read-only: JEDEC ID, command 0x9F) ---
+    # Bit-banged through PLA register 0xE81D exactly as RTUNicPG does (FlashChipSelect / FlashSetCommand):
+    # 0x80 = select, 0xC0 = deselect, data-in bit = 0x10, clock low/high = 0x80/0xA0, data-out = bit3.
+    # The two interface-enable registers are put back as they were afterwards.
+    def _rb(self, reg):
+        # read the whole aligned dword and pick the byte - a single unaligned byte read does not return
+        # the flash data bit (0xE81D bit3) reliably; this is how the working reader does it
+        return (int.from_bytes(self.dread(reg & ~3, 4), "little") >> ((reg & 3) * 8)) & 0xFF
+
+    def _wb(self, reg, val):
+        self.dwrite(reg, 1, bytes([val & 0xFF]))
+
+    def flash_id(self):
+        """(storage-status byte at 0xDC00, 3-byte JEDEC ID). An ID of 00 00 00 / FF FF FF = no SPI flash."""
+        dc00 = self._rb(0xDC00)
+        pg = self.pg_enter()                               # the SPI interface only answers in PG mode
+        e84c, e81c = self._rb(0xE84C), self._rb(0xE81C)
+        out = []
+        try:
+            self._wb(0xE84C, e84c | 0x10)
+            self._wb(0xE81C, e81c | 0xC0)                 # enable the SPI interface
+            self._wb(0xE81D, 0xC0)
+            self._wb(0xE81D, 0x80)                         # chip select
+            c = 0x9F
+            for _ in range(8):                             # command, MSB first
+                di = ((c >> 7) & 1) << 4
+                self._wb(0xE81D, di | 0x80)
+                self._wb(0xE81D, di | 0xA0)
+                c = (c << 1) & 0xFF
+            for _ in range(3):                             # manufacturer, type, capacity
+                v = 0
+                for _ in range(8):
+                    self._wb(0xE81D, 0x80)
+                    self._wb(0xE81D, 0xA0)
+                    v = (v << 1) | (1 if self._rb(0xE81D) & 0x08 else 0)
+                out.append(v)
+            self._wb(0xE81D, 0xC0)                         # deselect
+        finally:
+            self._wb(0xE81C, e81c)
+            self._wb(0xE84C, e84c)
+            if pg == 1:
+                self.pg_leave()
+        return dc00, bytes(out)
+
     # --- PG mode + efuse ---
     def pg_enter(self):
         return self._PGon(self.ctx) if self._PGon else -1

@@ -67,7 +67,9 @@ function Demo-Py($script, $argline) {
         "  chip variant (r8152) = AD",
         ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),
         ("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),
-        ("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin)
+        ("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
+        "  storage DC00 = 0x00   SPI flash ID = 00 00 00",
+        "CONFIG STORAGE = efuse only (one-time) - no SPI flash found; EEPROM not probed"
       ) -join "`r`n")
     }
     'efuse.py' {
@@ -367,6 +369,8 @@ function Read-Card {
     $layers[$mm.Groups[1].Value] = @{ Ok = ($v -eq 'YES'); Val = $v; Why = $mm.Groups[3].Value }
   }
   $lin = if ($layers.Contains('Linux')) { $layers['Linux'].Ok } else { $false }
+  $stor = ([regex]::Match($dr,'CONFIG STORAGE\s*=\s*(.+)')).Groups[1].Value.Trim()
+  if (-not $stor) { $stor = '(not reported)' }
   $vtxt = switch ($variant) { 'AD' {'RTL8153-AD'} 'BND' {'RTL8153-BND'} 'BD' {'RTL8153-BD'} 'Lenovo' {'Lenovo chip'} default {'none (a plain chip)'} }
 
   $banner.Text = if ($pass -and $lin) {'SUPPORTS MAC PASS-THROUGH  -  Windows, PXE and Linux'}
@@ -399,7 +403,8 @@ function Read-Card {
   Add-Txt $grid ("  {0}`r`n" -f $c.Desc)                         $C_TEXT $false 10 $true
   Add-Txt $grid ("  Windows name : {0}`r`n" -f $c.Name)          $C_TEXT $false 10 $true
   Add-Txt $grid ("  MAC address  : {0}`r`n" -f $c.Mac)           $C_TEXT $false 10 $true
-  Add-Txt $grid ("  Chip         : {0}, rev {1}`r`n`r`n" -f (Chip-Name $c.Pid),$rev) $C_TEXT $false 10 $true
+  Add-Txt $grid ("  Chip         : {0}, rev {1}`r`n" -f (Chip-Name $c.Pid),$rev) $C_TEXT $false 10 $true
+  Add-Txt $grid ("  Settings in  : {0}`r`n`r`n" -f $stor) $C_TEXT $false 10 $true
 
   # --- capability byte, full breakdown ---
   Add-Txt $grid "CAPABILITY  -  register 0xCFDB`r`n" $C_ACCENT $true 10.5 $false
@@ -435,7 +440,7 @@ function Read-Card {
   }
 
   $lay = ($layers.Keys | ForEach-Object { '{0}={1}' -f $_, $layers[$_].Val }) -join '  '
-  $script:rpt = [ordered]@{ Desc=$c.Desc; Name=$c.Name; Mac=$c.Mac; Chip=(Chip-Name $c.Pid); Rev=$rev; Cfdb=$cfdb; Bit0=$bit0; Bit1=$bit1; M0=$m0; M1=$m1; Pass=$pass; Guid=$c.Guid; Variant=$vtxt; Layers=$lay }
+  $script:rpt = [ordered]@{ Desc=$c.Desc; Name=$c.Name; Mac=$c.Mac; Chip=(Chip-Name $c.Pid); Rev=$rev; Cfdb=$cfdb; Bit0=$bit0; Bit1=$bit1; M0=$m0; M1=$m1; Pass=$pass; Guid=$c.Guid; Variant=$vtxt; Layers=$lay; Storage=$stor }
   Set-FixEnabled (-not $pass)
   if ($pass) { Set-Status ("Read OK: 0xCFDB=$cfdb - pass-through supported, nothing to do.") $C_GREEN }
   else       { Set-Status ("Read OK: 0xCFDB=$cfdb - pass-through OFF. Use the 'Permanent fix' area below to burn the AUX bit.") $C_RED }
@@ -469,6 +474,7 @@ DEVICE     : $($r.Desc)
 Windows    : $($r.Name)
 MAC        : $($r.Mac)
 Chip       : $($r.Chip), rev $($r.Rev)
+Settings in: $($r.Storage)
 
 0xCFDB     = $($r.Cfdb)
   bit0 RT-clone  = $($r.Bit0)   (Realtek's own clone mode; also the bit Linux checks on -AD chips)
