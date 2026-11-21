@@ -2,11 +2,11 @@
 
 Usage:  python -I settings.py {InterfaceGUID} [--dll new|old|auto]
 
-A card can keep its settings in efuse (one-time programmable), in an external SPI flash (rewritable),
-or both - efuse is applied first, then the flash on top. This tool works out which stores the card has
-and dumps each one with its decoded autoload records, so the same button works on any card:
-  - efuse:     probed by reading it; a chip without a usable efuse never answers (reported, not hung on)
-  - SPI flash: found by its JEDEC ID; only the settings area (first 256 bytes) is read - it is bit-banged
+The chip applies its settings at power-on from its efuse (one-time programmable) or an external EEPROM
+(RTL8153 datasheet 6.4). This tool dumps the efuse with its decoded autoload records - trying the RTL8156
+protocol first, then the RTL8153 one - and shows the start of an SPI flash if the card has one; that
+flash holds the driver install disk, not chip settings. A controller that does not answer is reported,
+never hung on.
 The output format is stable - the GUI shows it as is.
 """
 import os
@@ -14,14 +14,15 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import parse_autoload_records, parse_flash_records
+from efuse_core import parse_autoload_records
 from rtldiag import EfuseUnavailable, RtlDiag
-from storage import describe as describe_storage, has_flash
+from storage import flash_name, has_flash
 
 NAMES = {0xC000: "MAC address", 0xCFDB: "SW_FEATURE - MAC clone / pass-through bits",
          0xD81A: "USB_MISC_0 - chip variant (AD marker)", 0xD81F: "USB_MISC_1 - chip variant (BD/BND)"}
 EFUSE_BYTES = 256   # the whole efuse: a burned record sits past 0x80 (e.g. 0x080 on a burned RTL8156)
-FLASH_BYTES = 256
+EFUSE8153_BYTES = 192   # the user efuse RTUNicPG reads on an RTL8153B
+FLASH_BYTES = 256       # only the start of the flash is shown (header of the driver install disk)
 
 
 def _hex(data: bytes, base: int = 0):
@@ -49,6 +50,23 @@ def _records(recs):
         print(f"  => 0xCFDB ends up as 0x{regs[0xCFDB][-1]:02X} (the last record wins)")
 
 
+def _summary(recs, data, start, store):
+    """Plain-language reading of a dump: what is records, what is empty space."""
+    end = recs[-1]["at"] + recs[-1]["size"] if recs else start
+    print("in plain words:")
+    if recs:
+        print(f"  0x{start:03X}-0x{end - 1:03X}  {len(recs)} setting record(s), listed above; the chip applies them at power-on")
+    else:
+        print(f"  no setting records at all - the chip takes nothing from its {store} and runs on its factory defaults")
+    if end < len(data) and all(b == 0xFF for b in data[end:]):
+        print(f"  0x{end:03X}-0x{len(data) - 1:03X}  all FF = empty: erased / never written (FF is the blank state, not data)")
+    regs = {r["reg"] for r in recs if r["kind"] == "reg"}
+    if 0xCFDB not in regs:
+        print("  no 0xCFDB record - the pass-through bits are the chip's own default")
+    if 0xD81A not in regs and 0xD81F not in regs:
+        print("  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself")
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print("usage: settings.py {InterfaceGUID} [--dll new|old|auto]")
@@ -59,36 +77,46 @@ def main(argv):
     try:
         print(f"GUID {guid}  (DLL: {c.family} v{c.version}, {c.exports} procedures)")
 
-        efuse = None
+        efuse, proto = None, ""
         c.pg_enter()
         c.efuse_enable()
         try:
-            efuse = c.efuse_dump(EFUSE_BYTES)
+            efuse, proto = c.efuse_dump(EFUSE_BYTES), "RTL8156 protocol"
         except EfuseUnavailable:
-            efuse = None
+            pass
         finally:
             c.efuse_disable()
-            c.pg_leave()
+        if efuse is None:                       # older family (RTL8153): the other protocol, read only
+            try:
+                efuse, proto = c.efuse8153_dump(EFUSE8153_BYTES), "RTL8153 protocol"
+            except EfuseUnavailable:
+                pass
+        c.pg_leave()
 
-        dc00, jedec = c.flash_id()
+        _, jedec = c.flash_id()
         flash = c.flash_read(0, FLASH_BYTES) if has_flash(jedec) else None
 
-        print(f"STORAGE efuse = {'responding' if efuse is not None else 'not responding (not used on this chip)'}")
-        print(f"STORAGE flash = {describe_storage(jedec, dc00) if flash is not None else 'none'}")
+        print("STORAGE efuse = " + (f"responding ({proto})" if efuse is not None else
+              "could not be read - the efuse controller answered neither protocol this tool knows"))
+        print("STORAGE flash = " + (f"{flash_name(jedec)} - holds the driver install disk, not chip settings"
+                                    if flash is not None else "none"))
 
         if efuse is not None:
-            print(f"\n=== EFUSE (first {EFUSE_BYTES} bytes, one-time programmable) ===")
+            print(f"\n=== EFUSE (first {len(efuse)} bytes, one-time programmable) ===")
             _hex(efuse)
             print("records:")
-            _records(parse_autoload_records(efuse))
+            recs = parse_autoload_records(efuse)
+            _records(recs)
+            _summary(recs, efuse, 0, "efuse")
+        else:
+            print("\nThe settings this chip applies at power-on live in its efuse, which could not be read here.")
         if flash is not None:
-            print(f"\n=== SPI FLASH (first {FLASH_BYTES} bytes, rewritable) ===")
+            print(f"\n=== SPI FLASH (first {FLASH_BYTES} bytes) - driver install disk, not chip settings ===")
             _hex(flash)
-            print(f"header 0x000-0x007: {flash[:8].hex(' ')}  (left as is; records start at 0x008)")
-            print("records:")
-            _records(parse_flash_records(flash))
-        if efuse is None and flash is None:
-            print("\nNo readable settings store found - the chip runs on its factory defaults.")
+            print("in plain words:")
+            print(f"  0x000-0x007  {flash[:8].hex(' ')}  header of the driver install disk")
+            print("  0x008-...    FF = empty; the disk image itself starts at 0x1000 (not shown)")
+            print("  the chip does not load settings from this flash (RTL8153 datasheet 6.4: efuse or EEPROM only)")
     finally:
         c.close()
     return 0

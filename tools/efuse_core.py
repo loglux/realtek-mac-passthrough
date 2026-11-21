@@ -28,6 +28,16 @@ def build_record(reg: int, value: int) -> bytes:
     return bytes([0x40, (reg >> 8) & 0xFF, reg & 0xFF, value & 0xFF])
 
 
+def build_record_bytes(reg: int, data: bytes) -> bytes:
+    """A register-write autoload record of any length: [0x40 | (len-1)][reg 2B BE][data].
+
+    E.g. USB_MISC_0 (0xD81A) = 0x1000 -> data 00 10 (little-endian) -> 41 D8 1A 00 10.
+    """
+    if not 1 <= len(data) <= 32:
+        raise ValueError("record data must be 1..32 bytes")
+    return bytes([0x40 | (len(data) - 1), (reg >> 8) & 0xFF, reg & 0xFF]) + bytes(data)
+
+
 def record_dword(reg: int, value: int) -> int:
     """The little-endian dword that build_record(reg, value) burns (what the read-back must match).
 
@@ -74,6 +84,15 @@ def parse_flash_records(data: bytes) -> list:
     return recs
 
 
+def flash_append_point(data: bytes) -> int:
+    """Where the next record goes in an SPI-flash settings area: right after the last record."""
+    recs = parse_flash_records(data)
+    if not recs:
+        return FLASH_RECORDS_START
+    last = recs[-1]
+    return last["at"] + last["size"]
+
+
 # Record kinds by the top 3 bits of the first byte - the classifier in RTUNicPG (FUN_14005eba0):
 #   0x20 / 0x40  register write: [hdr][reg 2B BE][data], data length (hdr & 0x1F) + 1   (PLA / USB space)
 #   0xE0         DASH register write: [hdr][reg 4B BE][data], length (hdr & 0x0F) + 1
@@ -105,22 +124,22 @@ def parse_autoload_records(data: bytes) -> list:
             if i + 3 + ln > n:
                 break
             recs.append({"at": i, "kind": "reg", "reg": int.from_bytes(data[i + 1:i + 3], "big"),
-                         "data": bytes(data[i + 3:i + 3 + ln])})
+                         "data": bytes(data[i + 3:i + 3 + ln]), "size": 3 + ln})
             i += 3 + ln
         elif t == 0xE0:
             ln = (hdr & 0x0F) + 1
             if i + 5 + ln > n:
                 break
             recs.append({"at": i, "kind": "reg", "reg": int.from_bytes(data[i + 1:i + 5], "big"),
-                         "data": bytes(data[i + 5:i + 5 + ln])})
+                         "data": bytes(data[i + 5:i + 5 + ln]), "size": 5 + ln})
             i += 5 + ln
         elif t in FIXED_SIZE:
             size = FIXED_SIZE[t]
             if i + size > n:
                 break
-            recs.append({"at": i, "kind": "raw", "reg": None, "data": bytes(data[i:i + size])})
+            recs.append({"at": i, "kind": "raw", "reg": None, "data": bytes(data[i:i + size]), "size": size})
             i += size
         else:
-            recs.append({"at": i, "kind": "unknown", "reg": None, "data": bytes(data[i:i + 1])})
+            recs.append({"at": i, "kind": "unknown", "reg": None, "data": bytes(data[i:i + 1]), "size": 1})
             break
     return recs

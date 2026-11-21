@@ -308,13 +308,14 @@ class RtlDiag:
     def _wb(self, reg, val):
         self.dwrite(reg, 1, bytes([val & 0xFF]))
 
-    def _spi(self, cmd, nread=0, addr=None):
-        """One SPI transaction: select, send command (+ 24-bit address), clock in `nread` bytes, deselect."""
+    def _spi(self, cmd, nread=0, addr=None, data=b""):
+        """One SPI transaction: select, send command (+ 24-bit address, + data), clock in `nread` bytes, deselect."""
         self._wb(0xE81D, 0xC0)
         self._wb(0xE81D, 0x80)                             # chip select
         out_bytes = [cmd]
         if addr is not None:
             out_bytes += [(addr >> 16) & 0xFF, (addr >> 8) & 0xFF, addr & 0xFF]
+        out_bytes += list(data)
         for c in out_bytes:                                # MSB first
             for _ in range(8):
                 di = ((c >> 7) & 1) << 4
@@ -351,6 +352,42 @@ class RtlDiag:
         dc00 = self._rb(0xDC00)
         return dc00, self._flash_session(lambda: self._spi(0x9F, 3))
 
+    # --- SPI flash writes: the same sequence RTUNicPG uses (FlashWritePage / FlashErase) ---
+    def _flash_wait(self, polls=20000):
+        for _ in range(polls):
+            s = self._spi(0x05, 1)[0]
+            if not s & 1:                                   # bit0 = write in progress
+                return s
+        raise OSError("SPI flash stayed busy - timed out")
+
+    def _flash_wren(self):
+        self._spi(0x06)                                     # Write Enable
+        s = self._spi(0x05, 1)[0]
+        if not s & 2:                                       # bit1 = write-enable latch
+            raise OSError(f"SPI flash did not accept Write Enable (status 0x{s:02X})")
+
+    def flash_write_page(self, addr, data):
+        """Program bytes inside one 256-byte page (0x02). Only turns 1-bits into 0 - write over 0xFF."""
+        if not data or (addr & 0xFF) + len(data) > 256:
+            raise ValueError("a page program must stay inside one 256-byte page")
+        def go():
+            self._flash_wren()
+            self._spi(0x02, 0, addr, data)
+            return self._flash_wait()
+        return self._flash_session(go)
+
+    def flash_erase_sector(self, addr):
+        """Erase the 4 KB sector containing addr (0x20) - back to all 0xFF."""
+        def go():
+            self._flash_wren()
+            self._spi(0x20, 0, addr & ~0xFFF)
+            return self._flash_wait()
+        return self._flash_session(go)
+
+    def flash_status(self):
+        """SPI flash status register (command 0x05): bit0 = busy, bits 2-4 = write-protect. Read-only."""
+        return self._flash_session(lambda: self._spi(0x05, 1))[0]
+
     def flash_read(self, addr, n):
         """Read n bytes of the SPI flash from addr (command 0x03). Read-only. Bit-banged, so keep n small
         (the settings area is the first few hundred bytes; a full 2 MB read would take hours)."""
@@ -372,9 +409,10 @@ class RtlDiag:
         v = self.dread(0xE85B, 1)[0]
         self.dwrite(0xE85B, 1, bytes([v & 0x3B]))
 
-    # A healthy efuse controller clears its busy bit within a few polls. Some chips (e.g. an RTL8153 that keeps
-    # its settings in SPI flash) never clear it - without a limit the read looked like a hang (64 dwords x
-    # 10000 polls). So: bounded poll, and a clear error on the first timeout instead of grinding on.
+    # Two efuse protocols (RTUNicPG branches on the chip family):
+    #   newer chips (RTL8156...): dword protocol, command word at 0xDD04         -> efuse_read_dword / _write_dword
+    #   older chips (RTL8153...): 17-bit cells, command word at 0xDD02 (as r8152) -> efuse8153_read_byte (read only)
+    # An older chip never clears the 0xDD04 busy bit - so: bounded poll, and a clear error on the first timeout.
     EFUSE_POLLS = 2000
 
     def _efuse_wait(self, busy_bit):
@@ -383,8 +421,32 @@ class RtlDiag:
             if not (c & busy_bit):
                 return c
         raise EfuseUnavailable(
-            "efuse controller not responding (busy bit never clears) - this chip has no usable "
-            "efuse; its settings live elsewhere (e.g. SPI flash). Nothing was written.")
+            "efuse controller does not answer the RTL8156 protocol (busy bit never clears). Nothing was written.")
+
+    def efuse8153_read_byte(self, addr):
+        """Older-family efuse read, ported from RTUNicPG EFuseRead (FUN_14001c8d0): 0xDD02 = 0x8000 | addr/2,
+        wait for bit31 of the 0xDD00 dword to clear, then undo the per-word bit rotation of the 17-bit cell."""
+        self.dwrite(0xDD00, 4, ((0x80000000 | ((addr & 0xFE) << 15)) & 0xFFFFFFFF).to_bytes(4, "little"))
+        for _ in range(self.EFUSE_POLLS):
+            v = int.from_bytes(self.dread(0xDD00, 4), "little")
+            if not v & 0x80000000:
+                break
+        else:
+            raise EfuseUnavailable("efuse controller does not answer the RTL8153 protocol either. Nothing was written.")
+        if ((v >> 16) & 0x7F) != ((addr >> 1) & 0x7F):
+            raise EfuseUnavailable("efuse controller did not echo the requested address - read not trusted.")
+        sh = (v >> 16) & 0xF
+        if (v >> 16) & 0x10:
+            sh = 0x10 - sh
+        cell = ((v >> 7) & 0x10000) | (v & 0xFFFF)
+        word = ((cell >> (sh + 1)) << sh) & 0xFFFFFFFF
+        if sh:
+            word |= ((cell << (32 - sh)) & 0xFFFFFFFF) >> (32 - sh)
+        return (word >> 8 if addr & 1 else word) & 0xFF
+
+    def efuse8153_dump(self, nbytes=192):
+        """User efuse of an older-family chip (RTUNicPG reads 192 bytes for RTL8153B)."""
+        return bytes(self.efuse8153_read_byte(a) for a in range(nbytes))
 
     def efuse_read_dword(self, dw):
         self.dwrite(0xDD04, 2, ((dw & 0x1ff) | 0x8000).to_bytes(2, "little"))

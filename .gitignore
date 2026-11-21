@@ -15,3 +15,6 @@ __pycache__/
 
 # old registry-recipe utility: dropped from the repo, kept locally
 legacy/
+
+# flash sector backups made by tools/flash.py --write (per-card, never commit)
+backups/

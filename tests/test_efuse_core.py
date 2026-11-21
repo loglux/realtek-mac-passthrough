@@ -79,6 +79,18 @@ def test_parse_flash_records():
     assert len(ad) == 1 and ad[0]["at"] == 0x008 and ad[0]["reg"] == 0xD81A and ad[0]["data"] == b"\x00\x10"
 
 
+def test_build_record_bytes_ad_marker():
+    # USB_MISC_0 = 0x1000 (the RTL8153-AD marker), little-endian data -> the record planned for UGREEN
+    assert ec.build_record_bytes(0xD81A, (0x1000).to_bytes(2, "little")) == bytes.fromhex("41d81a0010")
+    assert ec.build_record_bytes(0xCFDB, b"\x03") == ec.build_record(0xCFDB, 0x03)
+
+
+def test_flash_append_point():
+    header = bytes.fromhex("0602000000080000")
+    assert ec.flash_append_point(header + b"\xff" * 16) == 0x008
+    assert ec.flash_append_point(header + bytes.fromhex("41d81a0010") + b"\xff" * 8) == 0x00D
+
+
 def test_parse_records_unknown_type_stops():
     recs = ec.parse_autoload_records(bytes([0x40, 0xCF, 0xDB, 0x03, 0xC5, 0x11, 0x22, 0xFF]))
     assert recs[0]["reg"] == 0xCFDB and recs[-1]["kind"] == "unknown" and recs[-1]["at"] == 4

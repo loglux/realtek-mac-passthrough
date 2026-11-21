@@ -1,113 +1,127 @@
 <#
   RtlPassthru - Realtek USB NIC MAC pass-through: inspect and fix.
-  Reads a Realtek USB NIC chip and tells you - in plain English - whether the dock can do MAC
-  pass-through, why, and what to do - and can burn the AUX-clone efuse bit to fix it.
-  Backend: tools/diag.py (registers) and tools/efuse.py (efuse read/dump/burn), one unified DLL layer.
+  Main window: three tiles (Windows / Pre-boot / Linux) answer "does it work, and where"; one action card
+  offers the fix that fits this card - burn the AUX bit into efuse (permanent) - or says honestly that
+  nothing can be done. Details (inline, under the buttons): registers, markers and the settings dump.
+  Backend (tools/): diag.py, settings.py, efuse.py - one DLL layer (rtldiag.py).
   Run as ADMIN (Card-Inspector.bat self-elevates):  powershell.exe -STA -File card-inspector.ps1
-  -Demo renders the UI with synthetic data (no hardware, no vendor DLL). -Screenshot <png> [-State red|green|dry|efuse]
-  saves one state to a PNG (implies -Demo) - used to produce the sanitized screenshots in the docs.
+  -Demo renders with synthetic data (no hardware, no vendor DLL, made-up MACs).
+  -Screenshot <png> [-State red|green|plain|dry|details|efuse] saves one state to a PNG (implies -Demo).
 #>
-param([switch]$Demo, [string]$Screenshot = '', [ValidateSet('red','green','dry','efuse')][string]$State = 'red')
+param([switch]$Demo, [string]$Screenshot = '',
+      [ValidateSet('red','green','plain','dry','efuse','details')][string]$State = 'red')
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+[Windows.Forms.Application]::EnableVisualStyles()
 $ErrorActionPreference = 'Stop'
-$TOOLS = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'tools'
-$PY  = 'python'
-$Version = '0.1.0'
+$ROOT    = Split-Path -Parent $MyInvocation.MyCommand.Path
+$TOOLS   = Join-Path $ROOT 'tools'
+$PY      = 'python'
+$Version = '0.2.0'
 $script:DemoMode = $Demo.IsPresent -or ($Screenshot -ne '')
 $DEMO_RED_GUID   = '{11111111-1111-1111-1111-111111111111}'
 $DEMO_GREEN_GUID = '{22222222-2222-2222-2222-222222222222}'
+$DEMO_PLAIN_GUID = '{33333333-3333-3333-3333-333333333333}'   # a plain RTL8153 with a driver-disk flash
 
-# ---- theme ----
-$C_BG     = [Drawing.Color]::FromArgb(246,247,249)
-$C_PANEL  = [Drawing.Color]::White
-$C_TEXT   = [Drawing.Color]::FromArgb(33,37,41)
-$C_MUTED  = [Drawing.Color]::FromArgb(108,114,124)
-$C_ACCENT = [Drawing.Color]::FromArgb(37,99,235)
-$C_GREEN  = [Drawing.Color]::FromArgb(34,160,80)
-$C_RED    = [Drawing.Color]::FromArgb(206,64,64)
-$C_AMBER  = [Drawing.Color]::FromArgb(200,150,40)
-$F_BODY   = New-Object Drawing.Font('Segoe UI',9)
-$F_MONO   = New-Object Drawing.Font('Consolas',9.5)
-$F_BTN    = New-Object Drawing.Font('Segoe UI',9,[Drawing.FontStyle]::Bold)
+# ---------- theme ----------
+function rgb($r,$g,$b) { [Drawing.Color]::FromArgb($r,$g,$b) }
+$C_WHITE   = [Drawing.Color]::White
+$C_SOFT    = rgb 243 244 246
+$C_LINE    = rgb 208 215 222
+$C_TEXT    = rgb 31 35 40
+$C_MUTED   = rgb 89 99 110
+$C_ACCENT  = rgb 31 111 235
+$C_GREEN   = rgb 46 139 62
+$C_GREENBG = rgb 233 246 236
+$C_RED     = rgb 209 56 61
+$C_REDBG   = rgb 253 236 236
+$C_AMBER   = rgb 178 106 0
+$C_AMBERBG = rgb 255 244 224
+$C_IDLE    = rgb 150 156 164
+$C_INFOBG  = rgb 232 240 254
+# type scale - the only font sizes the program uses (never a literal size elsewhere)
+$FS_XL = 18     # window title, tile verdicts (WORKS / NO)
+$FS_L  = 12     # action-card title, section headings in Details
+$FS_M  = 10     # all body text: labels, buttons, reasons, results, dumps
+$FS_S  = 9      # secondary info: storage line, DLL, status bar
+function F($size, [bool]$bold = $false, $fam = 'Segoe UI') {
+  New-Object Drawing.Font($fam, $size, $(if ($bold) { [Drawing.FontStyle]::Bold } else { [Drawing.FontStyle]::Regular }))
+}
 
+# ---------- cards ----------
 function Get-Cards {
   if ($script:DemoMode) {
     return @(
-      [pscustomobject]@{ Name='Ethernet';   Pid='8156'; Status='Up'; Mac='00-11-22-33-44-55'; Guid=$DEMO_RED_GUID;   Desc='Realtek USB 2.5GbE Family Controller' },
-      [pscustomobject]@{ Name='Ethernet 3'; Pid='8156'; Status='Up'; Mac='00-11-22-33-44-66'; Guid=$DEMO_GREEN_GUID; Desc='Realtek USB 2.5GbE Family Controller' }
+      [pscustomobject]@{ Name='Ethernet';   Pid='8156'; Mac='00-11-22-33-44-55'; Guid=$DEMO_RED_GUID;   Desc='Realtek USB 2.5GbE Family Controller' },
+      [pscustomobject]@{ Name='Ethernet 3'; Pid='8156'; Mac='00-11-22-33-44-66'; Guid=$DEMO_GREEN_GUID; Desc='Realtek USB 2.5GbE Family Controller' },
+      [pscustomobject]@{ Name='Ethernet 4'; Pid='8153'; Mac='00-11-22-33-44-AD'; Guid=$DEMO_PLAIN_GUID; Desc='Realtek USB GbE Family Controller' }
     )
   }
   Get-NetAdapter | Where-Object { $_.PnPDeviceID -match 'VID_0BDA&PID_815' } | ForEach-Object {
     $ppid = ([regex]::Match($_.PnPDeviceID,'PID_(\w+)')).Groups[1].Value
-    [pscustomobject]@{ Name=$_.Name; Pid=$ppid; Status=$_.Status; Mac=$_.MacAddress; Guid=$_.InterfaceGuid; Desc=$_.InterfaceDescription }
+    [pscustomobject]@{ Name=$_.Name; Pid=$ppid; Mac=$_.MacAddress; Guid=$_.InterfaceGuid; Desc=$_.InterfaceDescription }
   }
 }
+function Chip-Name($p) { switch ($p) { '8156' {'RTL8156 (2.5G)'} '8153' {'RTL8153 (1G)'} default {"RTL$p"} } }
 
-# synthetic tool output for -Demo / -Screenshot: matches the real diag.py / efuse.py / dll_list.py formats
-# that the GUI parses, with fully made-up data (no hardware, no real MAC) so docs carry no personal data.
+# ---------- demo backend: same output formats as the real tools, made-up data ----------
 function Demo-Py($script, $argline) {
-  $green = $argline -like "*$DEMO_GREEN_GUID*"
+  $g = if ($argline -like "*$DEMO_GREEN_GUID*") {'green'} elseif ($argline -like "*$DEMO_PLAIN_GUID*") {'plain'} else {'red'}
   switch -Wildcard ($script) {
     'dll_list.py' { return "new`t216`tok`t5.0.0.2`tdll\new\RtlDirectDiagLib64.dll" }
     'diag.py' {
-      # demo chip = an -AD variant (like the WAVLINK RTL8156): green = burned 0x03, red = blank 0x00
-      $cf = if ($green) { '0x03' } else { '0x00' }
-      $b0 = if ($green) { 1 } else { 0 }; $b1 = $b0
-      $yn = if ($green) { 'YES' } else { 'NO ' }
-      $aux = if ($green) { 'AUX-clone bit (0xCFDB bit1) is set' } else { 'AUX-clone bit (0xCFDB bit1) is not set' }
-      $lin = if ($green) { 'RTL8153-AD variant, and 0xCFDB bit0 is set' } else { 'RTL8153-AD variant, but 0xCFDB bit0 is not set' }
-      $pxe = if ($green) { 'both clone bits set - 0x03 verified at pre-boot on a Dell' } else { $aux }
-      return (@(
-        "GUID (demo)",
-        "DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-        "bcdDevice(REV) = 0x3000",
-        "  0xD81A USB_MISC_0 = 0x1000",
-        "  0xD81F USB_MISC_1 = 0x00",
-        ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={2}" -f $cf,$b0,$b1),
-        "  chip variant (r8152) = AD",
-        ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),
-        ("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),
-        ("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
-        "  storage DC00 = 0x00   SPI flash ID = 00 00 00",
-        "CONFIG STORAGE = efuse only (one-time) - no SPI flash found; EEPROM not probed"
-      ) -join "`r`n")
-    }
-    'efuse.py' {
-      if ($argline -like '*--plan*') {
-        return (@(
-          "append point (dword-aligned): 0x40 (dwaddr 0x10)",
-          "current dword @0x40 = 0xFFFFFFFF",
-          "record to write: 40 CF DB 03  (0xCFDB = 0x03)",
-          "dword to write @0x40: 0x03DBCF40",
-          "after burn 0x40..0x43 = 40 CF DB 03, then 0x44=0xFF (0xFF=EOL)"
-        ) -join "`r`n")
+      if ($g -eq 'plain') {
+        return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
+          "bcdDevice(REV) = 0x31FD","  0xD81A USB_MISC_0 = 0x0000","  0xD81F USB_MISC_1 = 0x40",
+          "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1","  chip variant (r8152) = none",
+          "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)",
+          "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)",
+          "PASSTHRU Linux   = NO   (not a chip variant r8152 recognises (no AD / BND / BD marker))",
+          "  storage DC00 = 0x40   SPI flash ID = 85 60 15",
+          "CONFIG STORAGE = efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings") -join "`r`n")
       }
-      $rows = @(
-        "0x000: 00 11 22 33 44 66 ff ff ff ff ff ff ff ff ff ff  |.`"3Df..........|",
-        "0x010: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|",
-        "0x040: 40 cf db 03 ff ff ff ff ff ff ff ff ff ff ff ff  |@...............|"
-      )
-      $recs = @("  0x00: write [00 11 22 33 44 66] -> reg 0xC000  (IDR/MAC)")
-      if ($green) { $recs += "  0x40: write [40 CF DB 03] -> reg 0xCFDB  (SW_FEATURE (MAC_CLONE/pass-through))   <<<" }
-      return (($rows + 'records:' + $recs) -join "`r`n")
+      $green = $g -eq 'green'
+      $cf = if ($green) {'0x03'} else {'0x00'}; $b = if ($green) {1} else {0}; $yn = if ($green) {'YES'} else {'NO '}
+      $aux = if ($green) {'AUX-clone bit (0xCFDB bit1) is set'} else {'AUX-clone bit (0xCFDB bit1) is not set'}
+      $lin = if ($green) {'RTL8153-AD variant, and 0xCFDB bit0 is set'} else {'RTL8153-AD variant, but 0xCFDB bit0 is not set'}
+      $pxe = if ($green) {'both clone bits set - 0x03 verified at pre-boot on a Dell'} else {$aux}
+      return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
+        "bcdDevice(REV) = 0x3104","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
+        ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  chip variant (r8152) = AD",
+        ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
+        "  storage DC00 = 0x00   SPI flash ID = 00 00 00","CONFIG STORAGE = efuse (one-time) - no external memory found; EEPROM not probed") -join "`r`n")
     }
     'settings.py' {
-      # demo chip = efuse-only RTL8156 with sample data (made-up MAC); green = our record appended at 0x040
-      $lines = @(
-        "GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)",
-        "STORAGE efuse = responding",
-        "STORAGE flash = none",
-        "",
+      if ($g -eq 'plain') {
+        $ff = 'ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|'
+        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8153 protocol)",
+          "STORAGE flash = PUYA 2 MB - holds the driver install disk, not chip settings","",
+          "=== EFUSE (first 192 bytes, one-time programmable) ===","0x000: $ff","0x010: $ff","...","0x0B0: $ff",
+          "records:","  (none - the area is empty)","in plain words:",
+          "  no setting records at all - the chip takes nothing from its efuse and runs on its factory defaults",
+          "  0x000-0x0BF  all FF = empty: erased / never written (FF is the blank state, not data)",
+          "  no 0xCFDB record - the pass-through bits are the chip's own default",
+          "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself","",
+          "=== SPI FLASH (first 256 bytes) - driver install disk, not chip settings ===",
+          "0x000: 06 02 00 00 00 08 00 00 ff ff ff ff ff ff ff ff  |................|","0x010: $ff","in plain words:",
+          "  0x000-0x007  06 02 00 00 00 08 00 00  header of the driver install disk",
+          "  0x008-...    FF = empty; the disk image itself starts at 0x1000 (not shown)",
+          "  the chip does not load settings from this flash (RTL8153 datasheet 6.4: efuse or EEPROM only)") -join "`r`n")
+      }
+      $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8156 protocol)","STORAGE flash = none","",
         "=== EFUSE (first 256 bytes, one-time programmable) ===",
         "0x000: 45 c0 00 00 11 22 33 44 66 40 cf db 01 ff ff ff  |E...`"3Df@......|",
-        "0x010: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|",
-        "records:",
+        "0x010: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|","records:",
         "  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)",
-        "  0x009: write [01] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)"
-      )
-      if ($green) { $lines += "  0x040: write [03] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)" }
-      $lines += ("  => 0xCFDB ends up as 0x{0} (the last record wins)" -f $(if ($green) { '03' } else { '01' }))
+        "  0x009: write [01] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)")
+      if ($g -eq 'green') { $lines += "  0x040: write [03] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)" }
+      $lines += ("  => 0xCFDB ends up as 0x{0} (the last record wins)" -f $(if ($g -eq 'green') {'03'} else {'01'}))
       return ($lines -join "`r`n")
+    }
+    'efuse.py' {
+      $plan = @("append point (dword-aligned): 0x40 (dwaddr 0x10)","current dword @0x40 = 0xFFFFFFFF",
+        "record to write: 40 CF DB 03  (0xCFDB = 0x03)","dword to write @0x40: 0x03DBCF40","after burn 0x40..0x43 = 40 CF DB 03, then 0x44=0xFF (0xFF=EOL)")
+      if ($argline -like '*--burn*') { return (($plan + "=== BURN (irreversible) ===" + "read-back @0x40 = 0x03DBCF40" + "RESULT: OK, matches") -join "`r`n") }
+      return (($plan + "=== DRY RUN: nothing written. Add --burn to write. ===") -join "`r`n")
     }
   }
   return ''
@@ -117,547 +131,549 @@ function Run-Py($script, $argline) {
   if ($script:DemoMode) { return (Demo-Py $script $argline) }
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = $PY
-  $psi.Arguments = "-I `"$TOOLS\$script`" $argline"
+  $psi.Arguments = "-I -u `"$TOOLS\$script`" $argline"            # -u: lines arrive as they are printed
   $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
   $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
   $psi.StandardErrorEncoding  = [System.Text.Encoding]::UTF8
   $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
   $p = [System.Diagnostics.Process]::Start($psi)
-  $out = $p.StandardOutput.ReadToEnd(); $err = $p.StandardError.ReadToEnd(); $p.WaitForExit()
-  return ($out + $err)
-}
-
-function Chip-Name($p) { switch ($p) { '8156' {'RTL8156 (2.5G)'} '8153' {'RTL8153 (1G)'} default {"RTL$p"} } }
-
-function Read-CFDB($guid) {
-  $dr = Run-Py 'diag.py' "`"$guid`" --dll $(Burn-Dll)"
-  $m = [regex]::Match($dr,'0xCFDB\s+EFUSE[^=]*=\s*(0x[0-9A-Fa-f]+)')
-  if ($m.Success) { return [Convert]::ToInt32($m.Groups[1].Value,16) } else { return -1 }
-}
-
-
-# ---------- UI ----------
-function Style-Btn($b,[bool]$primary) {
-  $b.FlatStyle='Flat'; $b.Font=$F_BTN; $b.Cursor='Hand'; $b.Height=30
-  if ($primary) { $b.BackColor=$C_ACCENT; $b.ForeColor=[Drawing.Color]::White; $b.FlatAppearance.BorderSize=0 }
-  else { $b.BackColor=$C_PANEL; $b.ForeColor=$C_ACCENT; $b.FlatAppearance.BorderColor=$C_ACCENT; $b.FlatAppearance.BorderSize=1 }
-}
-
-function Set-Status($text,$color) {
-  $statusLbl.Text = $text
-  $statusLbl.ForeColor = if ($color) { $color } else { $C_TEXT }
-  $statusStrip.Refresh()
-}
-
-function Set-FixEnabled([bool]$red) {
-  $btnDry.Enabled = $red
-  $btnBurn.Enabled = $red
-  Style-Burn
-}
-
-function Style-Burn {
-  # gray while locked, filled red once armed - the destructive action clearly lights up when it's live
-  if ($btnBurn.Enabled) {
-    $btnBurn.BackColor = $C_RED; $btnBurn.ForeColor = [Drawing.Color]::White; $btnBurn.FlatAppearance.BorderColor = $C_RED
-  } else {
-    $btnBurn.BackColor = [Drawing.Color]::FromArgb(238,240,243); $btnBurn.ForeColor = [Drawing.Color]::FromArgb(160,160,160); $btnBurn.FlatAppearance.BorderColor = [Drawing.Color]::FromArgb(205,209,214)
+  # keep the window alive while the tool runs: read line by line, pump messages in between
+  $errTask = $p.StandardError.ReadToEndAsync()
+  $sb = New-Object System.Text.StringBuilder
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $lt = $p.StandardOutput.ReadLineAsync()
+  while ($true) {
+    if ($lt.IsCompleted) {
+      $line = $lt.Result
+      if ($null -eq $line) { break }
+      [void]$sb.AppendLine($line)
+      $m = [regex]::Match($line, '^STEP = (.+)$')
+      if ($m.Success) { $script:progStep = $m.Groups[1].Value; $sw.Restart() }
+      $lt = $p.StandardOutput.ReadLineAsync()
+      continue
+    }
+    if ($script:progStep -and $aProg.Visible) { $aProgText.Text = "{0}   {1} s" -f $script:progStep, [int]$sw.Elapsed.TotalSeconds }
+    [Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Milliseconds 40
   }
+  $p.WaitForExit()
+  return ($sb.ToString() + $errTask.Result)
+}
+function Rx($text, $pattern) { $m = [regex]::Match($text, $pattern); if ($m.Success) { $m.Groups[1].Value.Trim() } else { '' } }
+
+# ---------- reading diag.py ----------
+function Parse-Diag($dr) {
+  $d = [ordered]@{ Raw=$dr; Ok=$false }
+  $cfhex = Rx $dr '0xCFDB\s+EFUSE[^=]*=\s*(0x[0-9A-Fa-f]+)'
+  if (-not $cfhex) { return $d }
+  $d.Ok = $true; $d.CfdbHex = $cfhex; $d.Cf = [Convert]::ToInt32($cfhex,16)
+  $d.Bit0 = $d.Cf -band 1; $d.Bit1 = ($d.Cf -shr 1) -band 1
+  $d.Rev = Rx $dr 'bcdDevice\(REV\)\s*=\s*(0x[0-9A-Fa-f]+)'
+  $d.M0  = Rx $dr '0xD81A\s+USB_MISC_0\s*=\s*(0x[0-9A-Fa-f]+)'
+  $d.M1  = Rx $dr '0xD81F\s+USB_MISC_1\s*=\s*(0x[0-9A-Fa-f]+)'
+  $d.Variant = Rx $dr 'chip variant \(r8152\)\s*=\s*(\S+)'
+  $d.Storage = Rx $dr 'CONFIG STORAGE\s*=\s*(.+)'; if (-not $d.Storage) { $d.Storage = 'not reported' }
+  $d.Dll = Rx $dr '(?m)^DLL\s+(.+?)\s{2}'
+  $d.Layers = [ordered]@{}
+  foreach ($mm in [regex]::Matches($dr,'PASSTHRU\s+(\w+)\s*=\s*(YES|NO|\?)\s+\((.*)\)')) {
+    $d.Layers[$mm.Groups[1].Value] = @{ Val=$mm.Groups[2].Value; Why=$mm.Groups[3].Value }
+  }
+  return $d
 }
 
-# selected Diag DLL from the top picker: 'new'/'old'/'auto', or a quoted explicit path from Locate...
-function Sel-Dll {
-  $a = if ($cmbDll.SelectedIndex -ge 0 -and $script:dllItems.Count -gt $cmbDll.SelectedIndex) { $script:dllItems[$cmbDll.SelectedIndex].Arg } else { 'auto' }
-  if ($a -match '[\\:/]') { '"' + $a + '"' } else { $a }
-}
-function Burn-Dll     { Sel-Dll }
-function Burn-Backend { switch (Sel-Dll) { 'new' {'Direct_API DLL'} 'old' {'API DLL'} 'auto' {'DLL'} default {'custom DLL'} } }
-# always 0x03 (both clone bits, like a chip that ships enabled): 0x02 would turn Linux off on -AD chips
-function Record-Hex   { '40 CF DB 03' }
-function Target-Hex   { '0x03' }
-
-$form = New-Object Windows.Forms.Form
-$form.Text = "RtlPassthru $Version"; $form.Size = '788,860'; $form.StartPosition='CenterScreen'
-$form.Font = $F_BODY; $form.BackColor=$C_BG; $form.FormBorderStyle='FixedSingle'; $form.MaximizeBox=$false
-
-# window/taskbar icon: blue rounded badge with a white pass-through arrow (drawn, no external .ico needed)
-try {
-  $ico = New-Object Drawing.Bitmap 64,64
-  $ig = [Drawing.Graphics]::FromImage($ico); $ig.SmoothingMode='AntiAlias'; $ig.Clear([Drawing.Color]::Transparent)
-  $ipath = New-Object Drawing.Drawing2D.GraphicsPath; $rd=28
-  $ipath.AddArc(2,2,$rd,$rd,180,90); $ipath.AddArc(62-$rd,2,$rd,$rd,270,90)
-  $ipath.AddArc(62-$rd,62-$rd,$rd,$rd,0,90); $ipath.AddArc(2,62-$rd,$rd,$rd,90,90); $ipath.CloseFigure()
-  $igrad = New-Object Drawing.Drawing2D.LinearGradientBrush (New-Object Drawing.Point 0,0), (New-Object Drawing.Point 0,64), $C_ACCENT, ([Drawing.Color]::FromArgb(29,78,216))
-  $ig.FillPath($igrad, $ipath)
-  $ipen = New-Object Drawing.Pen ([Drawing.Color]::White), 7; $ipen.StartCap='Round'; $ipen.EndCap='Round'
-  $ig.DrawLine($ipen, 15,32, 38,32)
-  $ihead = @((New-Object Drawing.Point 36,19),(New-Object Drawing.Point 52,32),(New-Object Drawing.Point 36,45))
-  $ig.FillPolygon([Drawing.Brushes]::White, $ihead)
-  $form.Icon = [Drawing.Icon]::FromHandle($ico.GetHicon())
-  $ipen.Dispose(); $igrad.Dispose(); $ipath.Dispose(); $ig.Dispose()
-} catch { $null = $_ }  # icon is cosmetic - never let it block startup
-
-$title = New-Object Windows.Forms.Label
-$title.Text='Realtek MAC Pass-Through'; $title.Location='16,12'; $title.Size='560,30'
-$title.Font=New-Object Drawing.Font('Segoe UI',15,[Drawing.FontStyle]::Bold); $title.ForeColor=$C_TEXT
-$form.Controls.Add($title)
-
-$sub = New-Object Windows.Forms.Label
-$sub.Text = 'Check whether a USB dock can clone the host''s MAC, and enable it when it can''t.'
-$sub.Location='18,47'; $sub.Size='748,16'; $sub.ForeColor=$C_MUTED
-$form.Controls.Add($sub)
-
-$lbl = New-Object Windows.Forms.Label; $lbl.Text='Card'; $lbl.Location='16,80'; $lbl.AutoSize=$true; $lbl.ForeColor=$C_MUTED
-$cmb = New-Object Windows.Forms.ComboBox; $cmb.Location='56,76'; $cmb.Size='496,26'; $cmb.DropDownStyle='DropDownList'; $cmb.FlatStyle='Flat'; $cmb.Font=$F_BODY
-$btnRefresh = New-Object Windows.Forms.Button; $btnRefresh.Text='Rescan'; $btnRefresh.Location='560,74'; $btnRefresh.Size='78,30'
-$btnRead = New-Object Windows.Forms.Button; $btnRead.Text='Read card'; $btnRead.Location='646,74'; $btnRead.Size='120,30'
-Style-Btn $btnRefresh $false; Style-Btn $btnRead $true
-$form.Controls.AddRange(@($lbl,$cmb,$btnRefresh,$btnRead))
-
-# owner-draw the combo so the closed field is dark-on-white (readable), dropdown selection is accent/white
-$cmb.DrawMode='OwnerDrawFixed'; $cmb.ItemHeight=18
-$cmb.Add_DrawItem({
-  param($s,$e)
-  if ($e.Index -lt 0) { return }
-  $isEdit = ($e.State -band [Windows.Forms.DrawItemState]::ComboBoxEdit) -ne 0
-  $sel = (-not $isEdit) -and (($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0)
-  $bg = if ($sel) { $C_ACCENT } else { [Drawing.Color]::White }
-  $fg = if ($sel) { [Drawing.Color]::White } else { $C_TEXT }
-  $e.Graphics.FillRectangle((New-Object Drawing.SolidBrush $bg), $e.Bounds)
-  [Windows.Forms.TextRenderer]::DrawText($e.Graphics, [string]$s.Items[$e.Index], $s.Font, $e.Bounds, $fg, ([Windows.Forms.TextFormatFlags]::Left -bor [Windows.Forms.TextFormatFlags]::VerticalCenter))
-})
-
-# --- Diag DLL row (which DLL to use for reading + efuse; auto-detected by command set, or Locate...) ---
-$lblDll = New-Object Windows.Forms.Label; $lblDll.Text='Diag DLL'; $lblDll.Location='16,116'; $lblDll.AutoSize=$true; $lblDll.ForeColor=$C_MUTED
-$cmbDll = New-Object Windows.Forms.ComboBox; $cmbDll.Location='84,112'; $cmbDll.Size='300,24'; $cmbDll.DropDownStyle='DropDownList'; $cmbDll.FlatStyle='Flat'; $cmbDll.Font=$F_BODY
-$btnLocate = New-Object Windows.Forms.Button; $btnLocate.Text='Locate...'; $btnLocate.Location='392,111'; $btnLocate.Size='90,26'
-Style-Btn $btnLocate $false
-$lblDllHint = New-Object Windows.Forms.Label; $lblDllHint.Text='auto-detected by command set'; $lblDllHint.Location='492,116'; $lblDllHint.AutoSize=$true; $lblDllHint.ForeColor=$C_MUTED
-$form.Controls.AddRange(@($lblDll,$cmbDll,$btnLocate,$lblDllHint))
-$cmbDll.DrawMode='OwnerDrawFixed'; $cmbDll.ItemHeight=18
-$cmbDll.Add_DrawItem({
-  param($s,$e)
-  if ($e.Index -lt 0) { return }
-  $isEdit = ($e.State -band [Windows.Forms.DrawItemState]::ComboBoxEdit) -ne 0
-  $sel = (-not $isEdit) -and (($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0)
-  $bg = if ($sel) { $C_ACCENT } else { [Drawing.Color]::White }
-  $fg = if ($sel) { [Drawing.Color]::White } else { $C_TEXT }
-  $e.Graphics.FillRectangle((New-Object Drawing.SolidBrush $bg), $e.Bounds)
-  [Windows.Forms.TextRenderer]::DrawText($e.Graphics, [string]$s.Items[$e.Index], $s.Font, $e.Bounds, $fg, ([Windows.Forms.TextFormatFlags]::Left -bor [Windows.Forms.TextFormatFlags]::VerticalCenter))
-})
-
-$banner = New-Object Windows.Forms.Label
-$banner.Location='16,152'; $banner.Size='750,40'; $banner.TextAlign='MiddleCenter'
-$banner.Font=New-Object Drawing.Font('Segoe UI',12.5,[Drawing.FontStyle]::Bold); $banner.Text=''; $banner.BackColor=$C_BG
-$form.Controls.Add($banner)
-
-$grid = New-Object Windows.Forms.RichTextBox
-$grid.Location='16,202'; $grid.Size='750,286'; $grid.ReadOnly=$true
-$grid.Font=New-Object Drawing.Font('Segoe UI',10); $grid.BackColor=$C_PANEL; $grid.BorderStyle='FixedSingle'
-$form.Controls.Add($grid)
-
-function Add-Txt($rtb,$text,$color,[bool]$bold,$size,[bool]$mono=$false) {
-  $rtb.SelectionStart = $rtb.TextLength; $rtb.SelectionLength = 0
-  $rtb.SelectionColor = $color
-  $fs  = if ($bold) { [Drawing.FontStyle]::Bold } else { [Drawing.FontStyle]::Regular }
-  $fam = if ($mono) { 'Consolas' } else { 'Segoe UI' }
-  $rtb.SelectionFont = New-Object Drawing.Font($fam, $size, $fs)
-  $rtb.AppendText($text)
-}
-
-$btnEf = New-Object Windows.Forms.Button; $btnEf.Text='Show settings dump'; $btnEf.Location='16,496'; $btnEf.Size='190,30'
-Style-Btn $btnEf $false
-$btnSave = New-Object Windows.Forms.Button; $btnSave.Text='Save report'; $btnSave.Location='216,496'; $btnSave.Size='150,30'
-Style-Btn $btnSave $false
-$form.Controls.AddRange(@($btnEf,$btnSave))
-
-# --- Permanent fix: value radios (row A) + two explicit steps with an arming checkbox (row B) ---
-$grpFix = New-Object Windows.Forms.GroupBox
-$grpFix.Text = 'Permanent fix  -  burn the AUX bit into efuse  (OTP, one-time, IRREVERSIBLE)'
-$grpFix.Location='16,534'; $grpFix.Size='738,88'; $grpFix.ForeColor=$C_TEXT
-# row A: what gets written (fixed - no choice to get wrong on an irreversible burn)
-$lblVal = New-Object Windows.Forms.Label; $lblVal.Text='Writes 0xCFDB = 0x03  (AUX + RT, as on a chip that ships enabled - Windows, pre-boot, and Linux on -AD chips)'; $lblVal.Location='12,26'; $lblVal.AutoSize=$true; $lblVal.ForeColor=$C_TEXT
-# row B: the two steps
-$btnDry = New-Object Windows.Forms.Button; $btnDry.Text='1.  Dry run (no burn)'; $btnDry.Location='12,54'; $btnDry.Size='180,26'
-Style-Btn $btnDry $false
-$btnBurn = New-Object Windows.Forms.Button; $btnBurn.Text='2.  Burn AUX bit'; $btnBurn.Location='556,54'; $btnBurn.Size='170,26'
-$btnBurn.FlatStyle='Flat'; $btnBurn.Font=$F_BTN; $btnBurn.Cursor='Hand'; $btnBurn.FlatAppearance.BorderSize=1
-$btnDry.Enabled=$false; $btnBurn.Enabled=$false
-$grpFix.Controls.AddRange(@($lblVal,$btnDry,$btnBurn))
-$form.Controls.Add($grpFix)
-
-$ef = New-Object Windows.Forms.TextBox
-$ef.Location='16,630'; $ef.Size='738,150'; $ef.Multiline=$true; $ef.ScrollBars='Vertical'
-$ef.Font=$F_MONO; $ef.ReadOnly=$true; $ef.Visible=$false; $ef.BackColor=$C_PANEL; $ef.BorderStyle='FixedSingle'
-$form.Controls.Add($ef)
-
-$statusStrip = New-Object Windows.Forms.StatusStrip
-$statusLbl = New-Object Windows.Forms.ToolStripStatusLabel
-$statusLbl.Text = 'Ready - pick a card and press Read card.'
-$statusStrip.Items.Add($statusLbl) | Out-Null
-$form.Controls.Add($statusStrip)
-
-function Load-Dlls {
-  $cmbDll.Items.Clear(); $script:dllItems = @()
-  $out = Run-Py 'dll_list.py' ''
-  foreach ($line in ($out -split "`r?`n")) {
-    $p = $line -split "`t"
-    if ($p.Count -ge 5 -and ($p[0] -eq 'new' -or $p[0] -eq 'old')) {
-      $famTxt = if ($p[0] -eq 'new') { 'Direct_API' } else { 'API' }
-      $stat = if ($p[2] -eq 'ok') { "all 8 commands present ($($p[1]) exports)" } else { $p[2] }
-      $script:dllItems += @{ Label = "$famTxt  -  v$($p[3])  -  $stat"; Arg = $p[0] }
+# plain-language reason under each tile
+function Tile-Reason($layer, $d) {
+  switch ($layer) {
+    'Windows' { if ($d.Bit1) {'AUX bit is set'} else {'AUX bit is not set'} }
+    'PXE'     { if ($d.Bit1 -and $d.Bit0) {'AUX bit is set'} elseif ($d.Bit1) {'not tested with this value'} else {'AUX bit is not set'} }
+    'Linux'   {
+      if ($d.Layers.Contains('Linux') -and $d.Layers['Linux'].Val -eq 'YES') {
+        switch ($d.Variant) { 'AD' {'recognised chip (RTL8153-AD)'} 'BND' {'recognised chip (RTL8153-BND)'} 'BD' {'recognised chip (RTL8153-BD)'} 'Lenovo' {'recognised Lenovo chip'} default {'recognised chip'} }
+      } elseif ($d.Variant -eq 'AD') { '-AD chip, but bit 0 is not set' }
+      else { 'chip variant not recognised' }
     }
   }
-  foreach ($it in $script:dllItems) { [void]$cmbDll.Items.Add($it.Label) }
-  if ($cmbDll.Items.Count) { $cmbDll.SelectedIndex=0 }
-  else { [void]$cmbDll.Items.Add('no diag DLL found - use Locate...'); $script:dllItems=@(@{Label='none';Arg='auto'}); $cmbDll.SelectedIndex=0 }
 }
 
+# ---------- UI helpers ----------
+function New-Lbl($parent, $text, $x, $y, $w, $h, $font, $color, $align = 'TopLeft') {
+  $l = New-Object Windows.Forms.Label
+  $l.Text = $text; $l.Location = "$x,$y"; $l.Size = "$w,$h"; $l.Font = $font; $l.ForeColor = $color
+  $l.BackColor = [Drawing.Color]::Transparent; $l.TextAlign = $align; $l.UseMnemonic = $false
+  $parent.Controls.Add($l); $l
+}
+function New-Btn($parent, $text, $x, $y, $w, $h) {
+  $b = New-Object Windows.Forms.Button
+  $b.Text = $text; $b.Location = "$x,$y"; $b.Size = "$w,$h"; $b.FlatStyle = 'Flat'; $b.Font = F $FS_M $true; $b.Cursor = 'Hand'
+  $parent.Controls.Add($b); $b
+}
+function Style-Btn($b, $kind) {
+  $b.FlatAppearance.BorderSize = 1
+  if (-not $b.Enabled) {
+    $b.BackColor = rgb 238 240 243; $b.ForeColor = rgb 160 164 170; $b.FlatAppearance.BorderColor = rgb 214 218 223; return
+  }
+  switch ($kind) {
+    'primary' { $b.BackColor = $C_ACCENT; $b.ForeColor = $C_WHITE; $b.FlatAppearance.BorderColor = $C_ACCENT }
+    'danger'  { $b.BackColor = $C_RED;    $b.ForeColor = $C_WHITE; $b.FlatAppearance.BorderColor = $C_RED }
+    'link'    { $b.BackColor = $C_WHITE;  $b.ForeColor = $C_ACCENT; $b.FlatAppearance.BorderSize = 0; $b.FlatAppearance.MouseOverBackColor = $C_SOFT }
+    default   { $b.BackColor = $C_WHITE;  $b.ForeColor = $C_ACCENT; $b.FlatAppearance.BorderColor = $C_ACCENT }
+  }
+}
+function Set-Btn($b, $text, $kind, [bool]$enabled, [bool]$visible = $true) {
+  $b.Text = $text; $b.Tag = $kind; $b.Visible = $visible; $b.Enabled = $enabled; Style-Btn $b $kind
+}
+function New-Box($parent, $x, $y, $w, $h, $bg, $border) {
+  $p = New-Object Windows.Forms.Panel
+  $p.Location = "$x,$y"; $p.Size = "$w,$h"; $p.BackColor = $bg; $p.Tag = $border
+  $p.Add_Paint({ param($s,$e) if ($s.Tag) { $pen = New-Object Drawing.Pen($s.Tag, 1); $e.Graphics.DrawRectangle($pen, 0, 0, $s.Width-1, $s.Height-1); $pen.Dispose() } })
+  $parent.Controls.Add($p); $p
+}
+function OwnerDraw-Combo($cb) {
+  $cb.DrawMode = 'OwnerDrawFixed'; $cb.ItemHeight = 20
+  $cb.Add_DrawItem({
+    param($s,$e)
+    if ($e.Index -lt 0) { return }
+    $isEdit = ($e.State -band [Windows.Forms.DrawItemState]::ComboBoxEdit) -ne 0
+    $sel = (-not $isEdit) -and (($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0)
+    $bg = if ($sel) { $C_ACCENT } else { $C_WHITE }; $fg = if ($sel) { $C_WHITE } else { $C_TEXT }
+    $e.Graphics.FillRectangle((New-Object Drawing.SolidBrush $bg), $e.Bounds)
+    [Windows.Forms.TextRenderer]::DrawText($e.Graphics, [string]$s.Items[$e.Index], $s.Font, $e.Bounds, $fg,
+      ([Windows.Forms.TextFormatFlags]::Left -bor [Windows.Forms.TextFormatFlags]::VerticalCenter))
+  })
+}
+
+# ---------- main window ----------
+$form = New-Object Windows.Forms.Form
+$form.Text = "RtlPassthru $Version"; $form.ClientSize = '760,606'; $form.StartPosition = 'CenterScreen'
+$form.Font = F $FS_M; $form.BackColor = $C_WHITE; $form.FormBorderStyle = 'FixedSingle'; $form.MaximizeBox = $false
+
+# window/taskbar icon: blue rounded badge with a white pass-through arrow (drawn, no .ico needed)
+try {
+  $ico = New-Object Drawing.Bitmap 64,64
+  $ig = [Drawing.Graphics]::FromImage($ico); $ig.SmoothingMode = 'AntiAlias'; $ig.Clear([Drawing.Color]::Transparent)
+  $ipath = New-Object Drawing.Drawing2D.GraphicsPath; $rd = 28
+  $ipath.AddArc(2,2,$rd,$rd,180,90); $ipath.AddArc(62-$rd,2,$rd,$rd,270,90)
+  $ipath.AddArc(62-$rd,62-$rd,$rd,$rd,0,90); $ipath.AddArc(2,62-$rd,$rd,$rd,90,90); $ipath.CloseFigure()
+  $igrad = New-Object Drawing.Drawing2D.LinearGradientBrush (New-Object Drawing.Point 0,0), (New-Object Drawing.Point 0,64), $C_ACCENT, (rgb 29 78 216)
+  $ig.FillPath($igrad, $ipath)
+  $ipen = New-Object Drawing.Pen ([Drawing.Color]::White), 7; $ipen.StartCap = 'Round'; $ipen.EndCap = 'Round'
+  $ig.DrawLine($ipen, 15,32, 38,32)
+  $ig.FillPolygon([Drawing.Brushes]::White, @((New-Object Drawing.Point 36,19),(New-Object Drawing.Point 52,32),(New-Object Drawing.Point 36,45)))
+  $form.Icon = [Drawing.Icon]::FromHandle($ico.GetHicon())
+  $ipen.Dispose(); $igrad.Dispose(); $ipath.Dispose(); $ig.Dispose()
+} catch { $null = $_ }   # cosmetic - never block startup
+
+New-Lbl $form 'Realtek MAC Pass-Through' 22 12 600 38 (F $FS_XL $true) $C_TEXT | Out-Null
+New-Lbl $form "Shows where a dock or dongle can take the laptop's MAC - and fixes it where it can." 24 52 700 22 (F $FS_M) $C_MUTED | Out-Null
+New-Lbl $form 'Card' 24 88 44 28 (F $FS_M) $C_MUTED 'MiddleLeft' | Out-Null
+$cmb = New-Object Windows.Forms.ComboBox
+$cmb.Location = '70,88'; $cmb.Size = '540,28'; $cmb.DropDownStyle = 'DropDownList'; $cmb.FlatStyle = 'Standard'; $cmb.Font = F $FS_M
+OwnerDraw-Combo $cmb; $form.Controls.Add($cmb)
+$btnRescan = New-Btn $form 'Rescan' 620 86 116 32; Set-Btn $btnRescan 'Rescan' 'outline' $true
+
+# three tiles
+$script:tiles = [ordered]@{}
+$tileNames = [ordered]@{ Windows='Windows'; PXE='Pre-boot / PXE'; Linux='Linux' }
+$i = 0
+foreach ($k in $tileNames.Keys) {
+  $p = New-Box $form (20 + $i*244) 132 232 114 $C_SOFT $C_LINE
+  $script:tiles[$k] = @{
+    Box  = $p
+    Name = (New-Lbl $p $tileNames[$k] 14 10 210 22 (F $FS_M $true) $C_TEXT)
+    Big  = (New-Lbl $p '' 14 34 210 40 (F $FS_XL $true) $C_IDLE)
+    Why  = (New-Lbl $p '' 14 80 210 22 (F $FS_M) $C_MUTED)
+  }
+  $i++
+}
+
+# the action card
+$act = New-Box $form 20 262 720 222 $C_WHITE $C_LINE
+$aTitle  = New-Lbl $act '' 16 14 680 28 (F $FS_L $true) $C_TEXT
+$aBody   = New-Lbl $act '' 16 46 690 42 (F $FS_M) $C_TEXT
+$aNote   = New-Lbl $act '' 16 90 690 22 (F $FS_M) $C_MUTED
+$btnA1   = New-Btn $act 'Preview' 16 118 120 34
+$btnA2   = New-Btn $act 'Write'   146 118 160 34
+
+# result banner: tinted background, coloured bar on the left, icon, bold headline + one detail line
+$aRes = New-Object Windows.Forms.Panel; $aRes.Location = '16,162'; $aRes.Size = '688,48'; $aRes.Visible = $false; $aRes.Tag = $C_ACCENT
+$aRes.Add_Paint({ param($s,$e) $br = New-Object Drawing.SolidBrush($s.Tag); $e.Graphics.FillRectangle($br, 0, 0, 4, $s.Height); $br.Dispose() })
+$act.Controls.Add($aRes)
+$aResIcon = New-Lbl $aRes '' 12 0 26 48 (F $FS_L $true) $C_ACCENT 'MiddleCenter'
+$aResHead = New-Lbl $aRes '' 42 5 640 20 (F $FS_M $true) $C_TEXT
+$aResText = New-Lbl $aRes '' 42 25 640 20 (F $FS_M) $C_MUTED
+
+$lblStore = New-Lbl $form '' 24 494 712 20 (F $FS_S) $C_MUTED
+
+$btnDetails = New-Btn $form 'Details' 16 520 110 32;  Set-Btn $btnDetails ('Details  ' + [char]0x25BE) 'link' $true
+$btnSave    = New-Btn $form 'Save report' 132 520 120 32; Set-Btn $btnSave 'Save report' 'link' $true
+$lblDll     = New-Lbl $form '' 300 526 340 20 (F $FS_S) $C_MUTED 'MiddleRight'
+$btnLocate  = New-Btn $form 'Locate...' 646 520 100 32; Set-Btn $btnLocate 'Locate...' 'link' $true
+
+# progress strip: same place as the result banner, shown while a tool talks to the card
+$aProg = New-Object Windows.Forms.Panel; $aProg.Location = '16,162'; $aProg.Size = '688,48'; $aProg.Visible = $false; $aProg.BackColor = $C_SOFT
+$act.Controls.Add($aProg)
+$aProgText = New-Lbl $aProg '' 14 4 660 20 (F $FS_M $true) $C_TEXT
+$aProgBar = New-Object Windows.Forms.ProgressBar; $aProgBar.Location = '14,28'; $aProgBar.Size = '660,10'
+$aProgBar.Style = 'Marquee'; $aProgBar.MarqueeAnimationSpeed = 30; $aProg.Controls.Add($aProgBar)
+
+function Show-Progress($step, [bool]$critical = $false) {
+  $script:progStep = $step; $script:critical = $critical
+  $aRes.Visible = $false; $aProgText.Text = $step; $aProg.Visible = $true; $aProg.BringToFront()
+  [Windows.Forms.Application]::DoEvents()
+}
+function Hide-Progress { $script:progStep = $null; $script:critical = $false; $aProg.Visible = $false }
+
+function Set-Result($kind, $head = '', $text = '') {
+  Hide-Progress
+  if (-not $kind) { $aRes.Visible = $false; return }
+  $map = @{
+    ok   = @($C_GREEN,  $C_GREENBG,     [char]0x2714)
+    info = @($C_ACCENT, $C_INFOBG,      [char]0x2192)
+    warn = @($C_AMBER,  $C_AMBERBG,     '!')
+    err  = @($C_RED,    $C_REDBG,       [char]0x2716)
+    hint = @($C_MUTED,  $C_SOFT,        'i')
+  }
+  $c = $map[$kind]
+  $aRes.Tag = $c[0]; $aRes.BackColor = $c[1]; $aResIcon.ForeColor = $c[0]; $aResIcon.Text = [string]$c[2]
+  $aResHead.Text = $head; $aResHead.ForeColor = $c[0]; $aResText.Text = $text; $aResText.ForeColor = $C_TEXT
+  $aRes.Visible = $true; $aRes.Invalidate()
+}
+
+# Details: an inline panel under the buttons - the window grows to show it, nothing pops up over it
+$BASE_H = 606
+$detPanel = New-Object Windows.Forms.Panel; $detPanel.Location = '16,560'; $detPanel.Size = '728,320'; $detPanel.Visible = $false
+$form.Controls.Add($detPanel)
+$detTabs = New-Object Windows.Forms.TabControl; $detTabs.Dock = 'Fill'; $detTabs.Font = F $FS_M; $detPanel.Controls.Add($detTabs)
+$detT1 = New-Object Windows.Forms.TabPage 'Markers & registers'; $detT2 = New-Object Windows.Forms.TabPage 'Settings dump'
+$detTabs.TabPages.AddRange(@($detT1,$detT2))
+$detRtb = New-Object Windows.Forms.RichTextBox; $detRtb.Dock = 'Fill'; $detRtb.ReadOnly = $true; $detRtb.BorderStyle = 'None'; $detRtb.BackColor = $C_WHITE
+$detT1.Controls.Add($detRtb)
+$detDump = New-Object Windows.Forms.TextBox; $detDump.Dock = 'Fill'; $detDump.Multiline = $true; $detDump.ScrollBars = 'Vertical'
+$detDump.ReadOnly = $true; $detDump.Font = F $FS_M $false 'Consolas'; $detDump.BackColor = $C_WHITE; $detDump.BorderStyle = 'None'
+$detT2.Controls.Add($detDump)
+$script:detOpen = $false
+
+$statusStrip = New-Object Windows.Forms.StatusStrip; $statusStrip.SizingGrip = $false; $statusStrip.BackColor = $C_SOFT; $statusStrip.Font = F $FS_S
+$statusLbl = New-Object Windows.Forms.ToolStripStatusLabel; $statusLbl.Text = 'Ready.'
+$statusStrip.Items.Add($statusLbl) | Out-Null; $form.Controls.Add($statusStrip)
+
+function Set-Status($text, $color) { $statusLbl.Text = $text; $statusLbl.ForeColor = $(if ($color) { $color } else { $C_TEXT }); $statusStrip.Refresh() }
+
+# ---------- the Realtek diag DLL: found automatically; Locate... points at a copy elsewhere ----------
+$script:dllArg = 'auto'
+function Sel-Dll { if ($script:dllArg -match '[\\:/]') { '"' + $script:dllArg + '"' } else { $script:dllArg } }
+function Load-Dlls {
+  $found = @()
+  foreach ($line in ((Run-Py 'dll_list.py' '') -split "`r?`n")) {
+    $p = $line -split "`t"
+    if ($p.Count -ge 5 -and ($p[0] -eq 'new' -or $p[0] -eq 'old') -and $p[2] -eq 'ok') { $found += ,$p }
+  }
+  if ($found.Count) {
+    $script:dllArg = 'auto'                                  # the tools pick the same one (newest command set first)
+    $lblDll.Text = "Realtek DLL:  v$($found[0][3])"; $lblDll.ForeColor = $C_MUTED
+  } else {
+    $lblDll.Text = 'Realtek DLL not found - use Locate...'; $lblDll.ForeColor = $C_RED
+  }
+}
 function Locate-Dll {
   $dlg = New-Object Windows.Forms.OpenFileDialog
   $dlg.Filter = 'RtlDirectDiagLib64.dll|RtlDirectDiagLib64.dll|DLL files (*.dll)|*.dll'
-  $start = Join-Path (Split-Path $TOOLS -Parent) 'dll'
-  $dlg.InitialDirectory = if (Test-Path $start) { $start } else { Split-Path $TOOLS -Parent }
+  $start = Join-Path $ROOT 'dll'; $dlg.InitialDirectory = if (Test-Path $start) { $start } else { $ROOT }
   if ($dlg.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { return }
   $path = $dlg.FileName
-  # classify the chosen file by its command set (same logic as auto-detect) - no meaningless "Custom"
   $p = (((Run-Py 'dll_list.py' "`"$path`"") -split "`r?`n")[0]) -split "`t"
   if ($p.Count -ge 5 -and ($p[0] -eq 'new' -or $p[0] -eq 'old') -and $p[2] -eq 'ok') {
-    $famTxt = if ($p[0] -eq 'new') { 'Direct_API' } else { 'API' }
-    $script:dllItems += @{ Label = "$famTxt (located)  -  v$($p[3])  -  all 8 commands present ($($p[1]) exports)"; Arg = $path }
-    [void]$cmbDll.Items.Add($script:dllItems[-1].Label)
-    $cmbDll.SelectedIndex = $cmbDll.Items.Count - 1
-    $script:rpt=$null; Set-FixEnabled $false
-    Set-Status ("Located {0} DLL: {1}" -f $famTxt, $path) $C_GREEN
-  } elseif ($p.Count -ge 5 -and ($p[0] -eq 'new' -or $p[0] -eq 'old')) {
-    $fam = if ($p[0] -eq 'new') { 'Direct_API' } else { 'API' }
-    [Windows.Forms.MessageBox]::Show(("This looks like the {0} diag API, but required commands are missing:`n  {1}`n`nNot usable - pick a complete RtlDirectDiagLib64.dll." -f $fam, ($p[2] -replace '^missing:','')), 'Locate DLL', 'OK', 'Warning') | Out-Null
-    Set-Status 'Located DLL is incomplete (missing commands).' $C_AMBER
+    $script:dllArg = $path
+    $lblDll.Text = "Realtek DLL:  v$($p[3])  (located)"; $lblDll.ForeColor = $C_MUTED
+    if ($script:cards -and $cmb.SelectedIndex -ge 0) { Read-Card }
   } else {
-    [Windows.Forms.MessageBox]::Show("That file is not a Realtek diag DLL (it has neither the API_ nor the Direct_API_ command set).`n`n$path", 'Locate DLL', 'OK', 'Warning') | Out-Null
-    Set-Status 'Located file is not a diag DLL.' $C_AMBER
+    [Windows.Forms.MessageBox]::Show("That file is not a complete Realtek diag DLL.`n`n$path", 'Locate DLL', 'OK', 'Warning') | Out-Null
   }
+}
+
+# ---------- state rendering ----------
+function Set-Tile($key, $state, $why) {
+  $t = $script:tiles[$key]
+  switch ($state) {
+    'yes'  { $t.Box.BackColor = $C_GREENBG; $t.Box.Tag = $C_GREEN; $t.Big.ForeColor = $C_GREEN; $t.Big.Text = ([char]0x2714 + '  WORKS') }
+    'no'   { $t.Box.BackColor = $C_REDBG;   $t.Box.Tag = $C_RED;   $t.Big.ForeColor = $C_RED;   $t.Big.Text = ([char]0x2716 + '  NO') }
+    'unk'  { $t.Box.BackColor = $C_AMBERBG; $t.Box.Tag = $C_AMBER; $t.Big.ForeColor = $C_AMBER; $t.Big.Text = '?  UNKNOWN' }
+    default { $t.Box.BackColor = $C_SOFT;   $t.Box.Tag = $C_LINE;  $t.Big.ForeColor = $C_IDLE;  $t.Big.Text = $state }
+  }
+  $t.Why.Text = $why; $t.Box.Invalidate()
+}
+
+function Show-Action($kind) {
+  $script:action = $kind; $script:previewOk = $false; Set-Result ''
+  $aTitle.ForeColor = $C_TEXT; $aNote.Text = ''; $aNote.ForeColor = $C_MUTED; $aBody.Text = ''
+  $d = $script:rpt
+  Set-Btn $btnA1 '1   Preview' 'outline' $false $false; Set-Btn $btnA2 '' 'primary' $false $false
+  switch ($kind) {
+    'burn' {
+      $all = $d.Variant -eq 'AD'
+      $aTitle.Text = if ($all) { 'Enable pass-through  (Windows, pre-boot and Linux)' } else { 'Enable pass-through  (Windows and pre-boot)' }
+      $aBody.Text = 'Burns the AUX bit into the chip''s efuse (writes 0x03).' +
+                    $(if ($all) { ' On this -AD chip that switches on all three systems at once.' } else { ' Linux also needs a recognised chip variant, which this chip is not.' })
+      $aNote.Text = ([char]0x26A0 + '  Permanent - efuse can be written once and never undone.'); $aNote.ForeColor = $C_RED
+      Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $false
+      Set-Result 'hint' 'Start with Preview' 'It checks the card and shows exactly what would be burned - nothing is written. Burn unlocks after it.'
+    }
+    'ok' {
+      $aTitle.Text = 'Nothing to do'; $aTitle.ForeColor = $C_GREEN
+      $aBody.Text = 'This card passes the laptop''s MAC through on Windows, pre-boot and Linux.'
+    }
+    'nolinux' {
+      $aTitle.Text = 'Linux: not on this card'
+      $aBody.Text = 'Linux only accepts recognised chip variants (-AD, -BND, -BD or Lenovo). This chip isn''t one, and this tool has no proven way to change that.'
+      $aNote.Text = 'Windows and pre-boot work and are not affected.'
+    }
+    'error' {
+      $aTitle.Text = 'Could not read this card'; $aTitle.ForeColor = $C_RED
+      $aBody.Text = 'Run as administrator, check the card is plugged in, and that the Realtek DLL is found (Locate... below).'
+    }
+    'reading' { $aTitle.Text = 'Reading the card...'; $aTitle.ForeColor = $C_MUTED }
+  }
+}
+
+function Set-Busy([bool]$busy) {
+  $script:busy = $busy                     # click handlers ignore presses while a tool is running
+  foreach ($b in @($btnRescan,$btnDetails,$btnSave,$btnLocate)) { $b.Enabled = -not $busy; Style-Btn $b $b.Tag }
+  $cmb.Enabled = -not $busy
+  $form.Cursor = if ($busy) { 'WaitCursor' } else { 'Default' }
+  [Windows.Forms.Application]::DoEvents()
 }
 
 function Refresh-List {
-  $script:rpt=$null; if ($btnDry) { Set-FixEnabled $false }
+  $script:rpt = $null; $script:reading = $true
   $cmb.Items.Clear()
-  $banner.Text='scanning cards...'; $banner.BackColor=[Drawing.Color]::Gainsboro; $banner.ForeColor=$C_TEXT; $form.Refresh()
+  foreach ($k in $script:tiles.Keys) { Set-Tile $k '' '' }
+  Show-Action 'reading'; $aTitle.Text = 'Looking for cards...'; $lblStore.Text = ''
+  Set-Status 'Scanning for Realtek USB cards...'; $form.Refresh()
   $script:cards = @(Get-Cards)
   foreach ($c in $script:cards) {
-    $cf = Read-CFDB $c.Guid
-    $pt = if ($cf -lt 0) {'(unread - run as admin)'} elseif ((($cf -shr 1) -band 1) -eq 1) {"PASS-THROUGH: YES  (0xCFDB=0x{0:X2})" -f $cf} else {"needs burn  (0xCFDB=0x{0:X2})" -f $cf}
-    [void]$cmb.Items.Add(("{0}  |  {1}  |  {2}" -f ($c.Desc -replace ' Family Controller',''),$c.Mac,$pt))
+    [void]$cmb.Items.Add(("{0}  |  {1}  |  {2}" -f ($c.Desc -replace ' Family Controller',''), $c.Mac, (Chip-Name $c.Pid)))
   }
-  $banner.Text=''; $banner.BackColor=$C_BG
-  if ($cmb.Items.Count) { $cmb.SelectedIndex=0 }
+  $script:reading = $false
+  if ($cmb.Items.Count) { $cmb.SelectedIndex = 0 }
+  else {
+    $aTitle.Text = 'No Realtek USB card found'; $aBody.Text = 'Plug in the dock or dongle, then press Rescan.'
+    Set-Status 'No Realtek USB card found.' $C_AMBER
+  }
 }
 
 function Read-Card {
-  if ($cmb.SelectedIndex -lt 0) { return }
+  if ($script:reading -or $cmb.SelectedIndex -lt 0) { return }
   $c = $script:cards[$cmb.SelectedIndex]
-  $banner.Text='reading...'; $banner.BackColor=[Drawing.Color]::Gainsboro; $banner.ForeColor=$C_TEXT
-  $grid.Text=''; $ef.Text=''; $ef.Visible=$false; Set-Status 'Reading the card...' $C_TEXT; $form.Refresh()
-
-  $dr = Run-Py 'diag.py' "`"$($c.Guid)`" --dll $(Burn-Dll)"
-  $rev  = ([regex]::Match($dr,'bcdDevice\(REV\)\s*=\s*(0x[0-9A-Fa-f]+)')).Groups[1].Value
-  $cfdb = ([regex]::Match($dr,'0xCFDB\s+EFUSE[^=]*=\s*(0x[0-9A-Fa-f]+)')).Groups[1].Value
-  $m0   = ([regex]::Match($dr,'0xD81A\s+USB_MISC_0\s*=\s*(0x[0-9A-Fa-f]+)')).Groups[1].Value
-  $m1   = ([regex]::Match($dr,'0xD81F\s+USB_MISC_1\s*=\s*(0x[0-9A-Fa-f]+)')).Groups[1].Value
-
-  $cf = -1; if ($cfdb) { $cf=[Convert]::ToInt32($cfdb,16) }
-  if ($cf -lt 0) {
-    $banner.Text='READ FAILED  (run as admin? card connected?)'; $banner.BackColor=$C_AMBER; $banner.ForeColor=[Drawing.Color]::White
-    $grid.Text = $dr; $script:rpt=$null; Set-FixEnabled $false; Set-Status 'Read failed - run as admin and check the card is connected.' $C_AMBER; return
+  foreach ($k in $script:tiles.Keys) { Set-Tile $k '...' 'reading' }
+  Show-Action 'reading'; $lblStore.Text = ''; Set-Status 'Reading the card...'
+  Set-Busy $true
+  try { $d = Parse-Diag (Run-Py 'diag.py' "`"$($c.Guid)`" --dll $(Sel-Dll)") } finally { Set-Busy $false }
+  $d.Guid = $c.Guid; $d.Card = $c
+  $script:rpt = $d
+  if (-not $d.Ok) {
+    foreach ($k in $script:tiles.Keys) { Set-Tile $k 'unk' 'could not read' }
+    Show-Action 'error'; Set-Status 'Read failed - run as administrator and check the card.' $C_AMBER; return
   }
-  $bit0 = $cf -band 1; $bit1 = ($cf -shr 1) -band 1
-  $pass = ($bit1 -eq 1)        # Windows / PXE gate = the AUX bit, the one thing this tool can fix
-
-  # per-layer verdict from diag.py (passthru.py): each layer checks a different marker
-  $variant = ([regex]::Match($dr,'chip variant \(r8152\)\s*=\s*(\S+)')).Groups[1].Value
-  $layers = [ordered]@{}
-  foreach ($mm in [regex]::Matches($dr,'PASSTHRU\s+(\w+)\s*=\s*(YES|NO|\?)\s+\((.*)\)')) {
-    $v = $mm.Groups[2].Value          # YES / NO / ? (not measured)
-    $layers[$mm.Groups[1].Value] = @{ Ok = ($v -eq 'YES'); Val = $v; Why = $mm.Groups[3].Value }
+  foreach ($k in @('Windows','PXE','Linux')) {
+    $v = if ($d.Layers.Contains($k)) { $d.Layers[$k].Val } else { '?' }
+    Set-Tile $k $(switch ($v) { 'YES' {'yes'} 'NO' {'no'} default {'unk'} }) (Tile-Reason $k $d)
   }
-  $lin = if ($layers.Contains('Linux')) { $layers['Linux'].Ok } else { $false }
-  $stor = ([regex]::Match($dr,'CONFIG STORAGE\s*=\s*(.+)')).Groups[1].Value.Trim()
-  if (-not $stor) { $stor = '(not reported)' }
-  $vtxt = switch ($variant) { 'AD' {'RTL8153-AD'} 'BND' {'RTL8153-BND'} 'BD' {'RTL8153-BD'} 'Lenovo' {'Lenovo chip'} default {'none (a plain chip)'} }
-
-  $banner.Text = if ($pass -and $lin) {'SUPPORTS MAC PASS-THROUGH  -  Windows, PXE and Linux'}
-                 elseif ($pass)       {'SUPPORTS MAC PASS-THROUGH  -  Windows and PXE (not Linux)'}
-                 else                 {'NOT SUPPORTED on Windows / PXE  -  AUX clone bit missing (needs burn)'}
-  $banner.BackColor = if ($pass) {$C_GREEN} else {$C_RED}
-  $banner.ForeColor = [Drawing.Color]::White
-
-  $grid.Clear()
-  # --- plain-language headline ---
-  if ($pass) { Add-Txt $grid "This dock CAN take your laptop's network identity (MAC).`r`n`r`n" $C_GREEN $true 13 $false }
-  else       { Add-Txt $grid "This dock CANNOT do it yet - it needs a one-time fix.`r`n`r`n"     $C_RED   $true 13 $false }
-
-  # --- the summary first: one line per layer ---
-  if ($layers.Count -gt 0) {
-    Add-Txt $grid "PASS-THROUGH BY SYSTEM`r`n" $C_ACCENT $true 10.5 $false
-    Add-Txt $grid "  each layer checks a different marker on the card`r`n" $C_MUTED $false 9 $false
-    foreach ($k in @('Windows','PXE','Linux')) {
-      if (-not $layers.Contains($k)) { continue }
-      $L = $layers[$k]
-      $label = if ($k -eq 'PXE') {'Pre-boot/PXE'} else {$k}
-      $col = switch ($L.Val) { 'YES' {$C_GREEN} '?' {$C_AMBER} default {$C_RED} }
-      Add-Txt $grid ("  {0,-13}{1,-5}{2}`r`n" -f $label, $L.Val, $L.Why) $col $true 10 $true
-    }
-    Add-Txt $grid "`r`n" $C_TEXT $false 6 $false
+  $fl = [regex]::Match($d.Storage, 'SPI flash \(([^)]+)\)')
+  $pretty = if ($d.Storage -like 'efuse*') { 'efuse  -  one-time, permanent' + $(if ($fl.Success) { "      (the SPI flash, $($fl.Groups[1].Value), holds the driver install disk)" } else { '' }) }
+            else { $d.Storage }
+  $lblStore.Text = 'Settings stored in:  ' + $pretty
+  $lin = $d.Layers.Contains('Linux') -and $d.Layers['Linux'].Val -eq 'YES'
+  $kind = if (-not $d.Bit1) { 'burn' } elseif ($lin) { 'ok' } else { 'nolinux' }
+  Show-Action $kind
+  $msg = switch ($kind) {
+    'burn'    { 'Pass-through is off - see the card below.' }
+    'nolinux' { 'Windows and pre-boot: yes. Linux: not on this chip.' }
+    default   { 'Works on Windows, pre-boot and Linux.' }
   }
-
-  # --- device ---
-  Add-Txt $grid "DEVICE`r`n" $C_ACCENT $true 10.5 $false
-  Add-Txt $grid ("  {0}`r`n" -f $c.Desc)                         $C_TEXT $false 10 $true
-  Add-Txt $grid ("  Windows name : {0}`r`n" -f $c.Name)          $C_TEXT $false 10 $true
-  Add-Txt $grid ("  MAC address  : {0}`r`n" -f $c.Mac)           $C_TEXT $false 10 $true
-  Add-Txt $grid ("  Chip         : {0}, rev {1}`r`n" -f (Chip-Name $c.Pid),$rev) $C_TEXT $false 10 $true
-  Add-Txt $grid ("  Settings in  : {0}`r`n`r`n" -f $stor) $C_TEXT $false 10 $true
-
-  # --- capability byte, full breakdown ---
-  Add-Txt $grid "CAPABILITY  -  register 0xCFDB`r`n" $C_ACCENT $true 10.5 $false
-  Add-Txt $grid "  the chip's MAC-clone capability byte, loaded from efuse at every power-on`r`n" $C_MUTED $false 9 $false
-  Add-Txt $grid ("  0xCFDB = {0}`r`n" -f $cfdb) $C_TEXT $false 10 $true
-  Add-Txt $grid ("  bit0  RT-clone  = {0}   Realtek's own clone mode; also the bit Linux checks on -AD chips`r`n" -f $bit0) $C_TEXT $false 10 $true
-  if ($pass) { Add-Txt $grid ("  bit1  AUX-clone = {0}   standard firmware pass-through  <= THIS is the one that matters`r`n" -f $bit1) $C_GREEN $true 10 $true }
-  else       { Add-Txt $grid ("  bit1  AUX-clone = {0}   standard firmware pass-through  <= MISSING (this is why it fails)`r`n" -f $bit1) $C_RED   $true 10 $true }
-  $concl = if ($pass) {'  => AUX-clone is SET: Windows and pre-boot take the host (laptop) MAC automatically.'} `
-                 else {'  => AUX-clone is NOT set: Windows and pre-boot keep the dock''s own MAC.'}
-  Add-Txt $grid ($concl + "`r`n`r`n") $C_TEXT $false 10 $true
-
-  # --- the second marker: chip variant (what Linux checks) ---
-  Add-Txt $grid "CHIP VARIANT  -  what Linux (r8152) checks`r`n" $C_ACCENT $true 10.5 $false
-  Add-Txt $grid "  set at the factory in the USB_MISC registers - a different marker from 0xCFDB`r`n" $C_MUTED $false 9 $false
-  Add-Txt $grid ("  USB_MISC_0 = {0}    USB_MISC_1 = {1}`r`n" -f $m0,$m1) $C_TEXT $false 10 $true
-  $vcol = if ($variant -and $variant -ne 'none') {$C_GREEN} else {$C_TEXT}
-  Add-Txt $grid ("  variant    = {0}`r`n`r`n" -f $vtxt) $vcol $true 10 $true
-
-  # --- verdict / what to do ---
-  Add-Txt $grid "VERDICT`r`n" $C_ACCENT $true 10.5 $false
-  if ($pass -and $lin) {
-    Add-Txt $grid "  SUPPORTS MAC pass-through on Windows, pre-boot/PXE and Linux - no action needed." $C_GREEN $true 10.5 $false
-  } elseif ($pass) {
-    Add-Txt $grid "  SUPPORTS MAC pass-through on Windows and pre-boot/PXE - no action needed there.`r`n" $C_GREEN $true 10.5 $false
-    Add-Txt $grid "  Linux: r8152 only accepts factory chip variants (-AD / -BND / -BD / Lenovo). This chip is not one of them, and that marker is set at the factory - the burn here cannot add it." $C_TEXT $false 10 $false
-  } else {
-    Add-Txt $grid "  NOT supported on Windows / pre-boot - the AUX-clone bit is not set in the chip.`r`n" $C_RED $true 10.5 $false
-    Add-Txt $grid "  To fix permanently: burn the AUX-clone bit with the 'Permanent fix' box below (one-time, IRREVERSIBLE)." $C_TEXT $false 10 $false
-    if ($variant -eq 'AD') {
-      Add-Txt $grid "`r`n  This is an -AD chip: the burn writes 0x03 (both bits), so Linux will accept it too." $C_TEXT $false 10 $false
-    }
-  }
-
-  $lay = ($layers.Keys | ForEach-Object { '{0}={1}' -f $_, $layers[$_].Val }) -join '  '
-  $script:rpt = [ordered]@{ Desc=$c.Desc; Name=$c.Name; Mac=$c.Mac; Chip=(Chip-Name $c.Pid); Rev=$rev; Cfdb=$cfdb; Bit0=$bit0; Bit1=$bit1; M0=$m0; M1=$m1; Pass=$pass; Guid=$c.Guid; Variant=$vtxt; Layers=$lay; Storage=$stor }
-  Set-FixEnabled (-not $pass)
-  if ($pass) { Set-Status ("Read OK: 0xCFDB=$cfdb - pass-through supported, nothing to do.") $C_GREEN }
-  else       { Set-Status ("Read OK: 0xCFDB=$cfdb - pass-through OFF. Use the 'Permanent fix' area below to burn the AUX bit.") $C_RED }
+  Set-Status $msg $(if ($kind -eq 'burn') { $C_RED } else { $C_TEXT })
+  if ($script:detOpen) { Fill-Details }
 }
 
-function Show-Efuse {
-  if ($cmb.SelectedIndex -lt 0) { return }
-  $c = $script:cards[$cmb.SelectedIndex]
-  $ef.Visible=$true; $ef.Text='reading the card''s settings (efuse and/or SPI flash)...'; $form.Refresh()
-  # settings.py works out where this card keeps its settings (efuse, SPI flash, or both) and dumps each,
-  # with decoded records - so a chip without efuse no longer hangs the window.
-  $out = Run-Py 'settings.py' "`"$($c.Guid)`" --dll $(Burn-Dll)"
-  $ef.Text = if ($out) { ($out -replace "`r?`n", "`r`n") } else { '(nothing read - run as admin? card connected?)' }
+# ---------- actions ----------
+function Preview {
+  $d = $script:rpt; if (-not $d) { return }
+  Set-Busy $true
+  Show-Progress 'Checking the efuse...'
+  try {
+    if ($script:action -eq 'burn') {
+      $out = Run-Py 'efuse.py' "`"$($d.Guid)`" --plan --dll $(Sel-Dll)"
+      $cur = Rx $out '@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})'
+      $rng = Rx $out '(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ ='
+      if ($out -match 'EFUSE UNAVAILABLE') {
+        Set-Result 'err' 'Can''t burn this chip  -  nothing written' 'Its efuse uses the RTL8153 protocol, which this tool can read but not write.'
+      } elseif ($cur -eq '0xFFFFFFFF' -and $rng) {
+        $script:previewOk = $true
+        Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record 40 CF DB 03  at efuse offset $rng   " + [char]0x00B7 + '   free slot, factory data untouched')
+        Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $true
+      } else {
+        Set-Result 'err' 'Can''t burn  -  nothing written' 'No free efuse slot was found, or the read failed. Details shows the efuse.'
+      }
+    }
+  } finally { if ($aProg.Visible) { Hide-Progress }; Set-Busy $false }
+}
+
+function Burn-Card {
+  $d = $script:rpt; if (-not $d -or -not $script:previewOk) { return }
+  Set-Busy $true; Show-Progress 'Checking the efuse again...'
+  try { $out = Run-Py 'efuse.py' "`"$($d.Guid)`" --plan --dll $(Sel-Dll)" } finally { Hide-Progress; Set-Busy $false }   # re-check right before burning
+  $cur = Rx $out '@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})'; $dwd = Rx $out '@0x[0-9A-Fa-f]+: (0x[0-9A-Fa-f]{8})'; $rng = Rx $out '(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ ='
+  if ($cur -ne '0xFFFFFFFF' -or -not $dwd) {
+    Set-Result 'err' 'Not burned' 'The free slot could not be confirmed again. Run Preview.'
+    Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $false; return
+  }
+  $msg = "Burn the AUX bit into this card's efuse?`n`nCard : $($d.Card.Desc)`nMAC  : $($d.Card.Mac)`n`n" +
+         "Adds the record 40 CF DB 03 at efuse offset $rng (free space; factory data is not touched).`n`n" +
+         "This is PERMANENT - efuse can be written once and never undone.`nKeep the card plugged in until it finishes."
+  if ([Windows.Forms.MessageBox]::Show($msg, 'Burn the AUX bit - permanent', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { Set-Status 'Burn cancelled.'; return }
+  Set-Busy $true; Set-Btn $btnA1 '1   Preview' 'outline' $false; Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $false
+  Set-Status 'Burning - do not unplug the card...' $C_RED
+  Show-Progress 'Burning the AUX bit - do not unplug the card...' $true
+  try { $out = Run-Py 'efuse.py' "`"$($d.Guid)`" --burn --dll $(Sel-Dll)" } finally { Hide-Progress; Set-Busy $false }
+  $back = Rx $out 'read-back @0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})'
+  if ($back -and $back -eq $dwd) {
+    Set-Result 'ok' 'Burned and verified' 'Unplug and re-plug the card so it reloads its efuse, then press Rescan.'
+    Set-Status 'Burn verified. Re-plug the card, then Rescan.' $C_GREEN
+    [Windows.Forms.MessageBox]::Show("Burned and verified.`n`nUnplug and re-plug the card so it loads the new setting, then press Rescan.", 'Done', 'OK', 'Information') | Out-Null
+  } else {
+    Set-Result 'err' "The burn did not verify  (read back '$back')" 'The card is not harmed - writes only go to free space. Re-plug and try again.'
+    Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Status 'Burn did not verify.' $C_RED
+  }
+}
+
+# ---------- details window ----------
+function Add-Txt($rtb, $text, $color, [bool]$bold = $false, $size = $FS_M, [bool]$mono = $false) {
+  $rtb.SelectionStart = $rtb.TextLength; $rtb.SelectionLength = 0; $rtb.SelectionColor = $color
+  $rtb.SelectionFont = F $size $bold $(if ($mono) { 'Consolas' } else { 'Segoe UI' }); $rtb.AppendText($text)
+}
+function Fill-Details {
+  $d = $script:rpt
+  $rtb = $detRtb; $rtb.Clear(); $detDump.Text = ''
+  if (-not $d -or -not $d.Ok) { $detDump.Text = '(read a card first)'; return }
+  Add-Txt $rtb "DEVICE`r`n" $C_ACCENT $true $FS_L
+  Add-Txt $rtb ("  {0}`r`n  Windows name : {1}`r`n  MAC address  : {2}`r`n  Chip         : {3}, rev {4}`r`n  Settings in  : {5}`r`n  Diag DLL     : {6}`r`n`r`n" -f `
+    $d.Card.Desc, $d.Card.Name, $d.Card.Mac, (Chip-Name $d.Card.Pid), $d.Rev, $d.Storage, $d.Dll) $C_TEXT $false $FS_M $true
+  Add-Txt $rtb "PASS-THROUGH BY SYSTEM  -  each one checks a different marker`r`n" $C_ACCENT $true $FS_L
+  foreach ($k in @('Windows','PXE','Linux')) {
+    if (-not $d.Layers.Contains($k)) { continue }
+    $L = $d.Layers[$k]; $col = switch ($L.Val) { 'YES' {$C_GREEN} '?' {$C_AMBER} default {$C_RED} }
+    Add-Txt $rtb ("  {0,-9}{1,-5}{2}`r`n" -f $k, $L.Val, $L.Why) $col $true $FS_M $true
+  }
+  Add-Txt $rtb "`r`nTHE MARKERS ON THIS CARD`r`n" $C_ACCENT $true $FS_L
+  Add-Txt $rtb ("  0xCFDB = {0}   capability byte, loaded at every power-on`r`n" -f $d.CfdbHex) $C_TEXT $false $FS_M $true
+  Add-Txt $rtb ("    bit1 AUX-clone = {0}   what Windows and pre-boot check`r`n" -f $d.Bit1) $(if ($d.Bit1) {$C_GREEN} else {$C_RED}) $true $FS_M $true
+  Add-Txt $rtb ("    bit0 RT-clone  = {0}   Linux checks it too, on -AD chips only`r`n" -f $d.Bit0) $C_TEXT $false $FS_M $true
+  Add-Txt $rtb ("  USB_MISC_0 = {0}   USB_MISC_1 = {1}   chip variant, what Linux checks first`r`n" -f $d.M0, $d.M1) $C_TEXT $false $FS_M $true
+  $v = if ($d.Variant -and $d.Variant -ne 'none') { "RTL8153-$($d.Variant)" -replace 'RTL8153-Lenovo','Lenovo chip' } else { 'none - a plain chip' }
+  Add-Txt $rtb ("    variant = {0}`r`n" -f $v) $(if ($d.Variant -and $d.Variant -ne 'none') {$C_GREEN} else {$C_TEXT}) $true $FS_M $true
+  Add-Txt $rtb "`r`nHow these markers work: docs/how-mac-passthrough-works.md`r`n" $C_MUTED $false $FS_S
+  $detDump.Text = 'reading the card''s settings (efuse, and the SPI flash if there is one)...'; [Windows.Forms.Application]::DoEvents()
+  Set-Busy $true
+  try { $out = Run-Py 'settings.py' "`"$($d.Guid)`" --dll $(Sel-Dll)" } finally { Set-Busy $false }
+  $detDump.Text = if ($out) { $out -replace "`r?`n", "`r`n" } else { '(nothing read)' }
+}
+
+function Toggle-Details([bool]$open) {
+  $script:detOpen = $open
+  if ($open) {
+    # grow the window downwards, but never past the bottom of the screen (laptops at 125-150% scaling)
+    $wa = [Windows.Forms.Screen]::FromControl($form).WorkingArea
+    $chrome = $form.Height - $form.ClientSize.Height
+    $room = $wa.Bottom - $form.Top - $chrome - $BASE_H - 12
+    $h = [Math]::Max(220, [Math]::Min(360, $room))
+    $detPanel.Height = $h; $detPanel.Visible = $true
+    $form.ClientSize = New-Object Drawing.Size(760, ($BASE_H + $h + 12))
+    if ($form.Bottom -gt $wa.Bottom) { $form.Top = [Math]::Max($wa.Top, $wa.Bottom - $form.Height) }
+    Set-Btn $btnDetails ('Details  ' + [char]0x25B4) 'link' $true
+    Fill-Details
+  } else {
+    $detPanel.Visible = $false; $form.ClientSize = New-Object Drawing.Size(760, $BASE_H)
+    Set-Btn $btnDetails ('Details  ' + [char]0x25BE) 'link' $true
+  }
 }
 
 function Save-Report {
-  if (-not $script:rpt) { Read-Card }
-  if (-not $script:rpt) { Set-Status 'Nothing to save - read a card first.' $C_AMBER; return }
-  $r = $script:rpt
-  Set-Status 'Building report (reading the card''s settings)...' $C_TEXT
-  $stout = Run-Py 'settings.py' "`"$($r.Guid)`" --dll $(Burn-Dll)"
-  $settings = if ($stout) { ($stout -replace "`r?`n", "`r`n") } else { '(settings not read)' }
-  $verdict = if ($r.Pass) { 'SUPPORTS MAC pass-through - no action needed.' } else { 'NOT supported - AUX-clone bit (0xCFDB bit1) missing; needs an efuse burn.' }
+  $d = $script:rpt; if (-not $d -or -not $d.Ok) { Set-Status 'Nothing to save - read a card first.' $C_AMBER; return }
+  Set-Status 'Building the report (reading the card''s settings)...'
+  $st = Run-Py 'settings.py' "`"$($d.Guid)`" --dll $(Sel-Dll)"
+  $lay = ($d.Layers.Keys | ForEach-Object { '{0} = {1}  ({2})' -f $_, $d.Layers[$_].Val, $d.Layers[$_].Why }) -join "`r`n  "
   $txt = @"
 RtlPassthru $Version - report
 Generated : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 
-DEVICE     : $($r.Desc)
-Windows    : $($r.Name)
-MAC        : $($r.Mac)
-Chip       : $($r.Chip), rev $($r.Rev)
-Settings in: $($r.Storage)
+DEVICE     : $($d.Card.Desc)
+Windows    : $($d.Card.Name)
+MAC        : $($d.Card.Mac)
+Chip       : $(Chip-Name $d.Card.Pid), rev $($d.Rev)
+Settings in: $($d.Storage)
 
-0xCFDB     = $($r.Cfdb)
-  bit0 RT-clone  = $($r.Bit0)   (Realtek's own clone mode; also the bit Linux checks on -AD chips)
-  bit1 AUX-clone = $($r.Bit1)   (standard _AUXMAC_ pass-through; what Windows and pre-boot check)
-USB_MISC_0 = $($r.M0)    USB_MISC_1 = $($r.M1)
-CHIP VARIANT (r8152) : $($r.Variant)
-PASS-THROUGH         : $($r.Layers)
+PASS-THROUGH BY SYSTEM
+  $lay
 
-VERDICT    : $verdict
+MARKERS
+  0xCFDB     = $($d.CfdbHex)   (bit1 AUX-clone = $($d.Bit1), bit0 RT-clone = $($d.Bit0))
+  USB_MISC_0 = $($d.M0)    USB_MISC_1 = $($d.M1)    chip variant = $($d.Variant)
 
---- settings store(s): efuse and/or SPI flash, raw + decoded ---
-$settings
+--- settings: efuse raw + decoded (and the start of an SPI flash, if any) ---
+$($st -replace "`r?`n", "`r`n")
 "@
   $dlg = New-Object Windows.Forms.SaveFileDialog
   $dlg.Filter = 'Text file (*.txt)|*.txt'
-  $dlg.FileName = ("card-report-{0}-{1}.txt" -f ($r.Mac -replace '[:-]',''), (Get-Date -Format 'yyyyMMdd-HHmm'))
+  $dlg.FileName = ("card-report-{0}-{1}.txt" -f ($d.Card.Mac -replace '[:-]',''), (Get-Date -Format 'yyyyMMdd-HHmm'))
   if ($dlg.ShowDialog() -eq [Windows.Forms.DialogResult]::OK) {
     [IO.File]::WriteAllText($dlg.FileName, $txt, (New-Object Text.UTF8Encoding($false)))
     Set-Status ("Report saved: {0}" -f $dlg.FileName) $C_GREEN
-  } else {
-    Set-Status 'Save cancelled.' $C_TEXT
-  }
+  } else { Set-Status 'Save cancelled.' }
 }
 
-function Dry-Run {
-  if (-not $script:rpt -or $script:rpt.Pass) { return }
-  $r = $script:rpt
-  Set-Status ("Dry run via {0} - reading efuse, locating the free slot (nothing is written)..." -f (Burn-Backend)) $C_TEXT
-  $dry = Run-Py 'efuse.py' "`"$($r.Guid)`" --plan --dll $(Burn-Dll)"
-  $cur = ([regex]::Match($dry,'@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})')).Groups[1].Value
-  $dwd = ([regex]::Match($dry,'@0x[0-9A-Fa-f]+: (0x[0-9A-Fa-f]{8})')).Groups[1].Value
-  $rng = ([regex]::Match($dry,'(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ =')).Groups[1].Value
-  $ef.Visible=$true
-  if ($cur -eq '0xFFFFFFFF' -and $rng -and $dwd) {
-    $ef.Text = @(
-      "DRY RUN   -   backend: $(Burn-Backend)   -   nothing was written.",
-      "",
-      "Append point  : $rng   (dword-aligned, at the end of autoload)",
-      "Current value : $cur   (0xFFFFFFFF = free -> OK to write here)",
-      "Would write   : dword $dwd  =  record  $(Record-Hex)   ->  0xCFDB = $(Target-Hex)",
-      "",
-      "Nothing burned. To proceed: press '2. Burn AUX bit' (you'll confirm once more in a dialog)."
-    ) -join "`r`n"
-    Set-Status "Dry run OK: would append $(Record-Hex) at $rng (slot is free). Nothing burned." $C_TEXT
-  } else {
-    $ef.Text = "DRY RUN - could not confirm a free slot (append point not 0xFFFFFFFF, or read failed).`r`n`r`n(raw tool output)`r`n$dry"
-    Set-Status 'Dry run: append point is not free or read failed - see efuse panel.' $C_AMBER
-  }
-}
-
-function Burn-Card {
-  if (-not $script:rpt -or $script:rpt.Pass) { return }
-  $r = $script:rpt
-
-  # re-check the free slot right before burning
-  Set-Status 'Checking the free slot before burn...' $C_TEXT
-  $dry = Run-Py 'efuse.py' "`"$($r.Guid)`" --plan --dll $(Burn-Dll)"
-  $cur = ([regex]::Match($dry,'@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})')).Groups[1].Value
-  $dwd = ([regex]::Match($dry,'@0x[0-9A-Fa-f]+: (0x[0-9A-Fa-f]{8})')).Groups[1].Value
-  $rng = ([regex]::Match($dry,'(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ =')).Groups[1].Value
-  if (-not $cur -or -not $dwd -or $cur -ne '0xFFFFFFFF') {
-    $ef.Visible=$true; $ef.Text="BURN - could not confirm a free slot (append point not 0xFFFFFFFF, or read failed).`r`n`r`n(raw tool output)`r`n$dry"
-    Set-Status 'Cannot burn - append point not free (see efuse panel).' $C_RED
-    [Windows.Forms.MessageBox]::Show("Can't burn: the append point is not free (0xFFFFFFFF), or the read failed.`n`nDetails are in the efuse panel.", 'Burn', 'OK', 'Warning') | Out-Null
-    return
-  }
-
-  $msg = "About to BURN the AUX-clone bit into this card's efuse.`n`n" +
-         "Card    : $($r.Desc)`n" +
-         "MAC     : $($r.Mac)`n" +
-         "Now     : 0xCFDB = $($r.Cfdb)   (pass-through OFF)`n" +
-         "Backend : $(Burn-Backend)`n`n" +
-         "It will append the record  $(Record-Hex)  at efuse offset $rng`n" +
-         "(writes dword $dwd into free space; factory data is NOT touched).`n`n" +
-         "This is a ONE-TIME, IRREVERSIBLE write (OTP efuse).`n" +
-         "Keep the card plugged in and still until it finishes.`n`n" +
-         "Proceed with the burn?"
-  $ans = [Windows.Forms.MessageBox]::Show($msg, 'Confirm efuse burn (IRREVERSIBLE)', 'YesNo', 'Warning', 'Button2')
-  if ($ans -ne [Windows.Forms.DialogResult]::Yes) { Set-Status 'Burn cancelled.' $C_TEXT; return }
-
-  $btnDry.Enabled=$false; $btnBurn.Enabled=$false; Style-Burn
-  $btnRead.Enabled=$false; $btnRefresh.Enabled=$false; $btnSave.Enabled=$false
-  Set-Status ("BURNING via {0} - do NOT unplug the card..." -f (Burn-Backend)) $C_RED
-  $out = Run-Py 'efuse.py' "`"$($r.Guid)`" --burn --dll $(Burn-Dll)"
-  $btnRead.Enabled=$true; $btnRefresh.Enabled=$true; $btnSave.Enabled=$true
-  $ef.Visible=$true
-  $back = ([regex]::Match($out,'read-back @0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})')).Groups[1].Value
-  if ($back -and $back -eq $dwd) {
-    $ef.Text = @(
-      "BURN   -   backend: $(Burn-Backend)   -   OK.",
-      "",
-      "Wrote record $(Record-Hex) at $rng.",
-      "Read-back = $back   ->   matches (0xCFDB will load as $(Target-Hex) after re-plug).",
-      "",
-      "Now UNPLUG and re-plug the card, then press Rescan."
-    ) -join "`r`n"
-    Set-Status 'Burn verified OK. UNPLUG and re-plug the card, then press Rescan.' $C_GREEN
-    [Windows.Forms.MessageBox]::Show("Burn verified OK - the efuse now carries 0xCFDB = $(Target-Hex).`n`nUNPLUG and re-plug the card (power-cycle) so it reloads the efuse, then press Rescan. It should read as SUPPORTED.", 'Burn complete', 'OK', 'Information') | Out-Null
-  } else {
-    $ef.Text = "BURN did NOT verify (read-back '$back' did not match '$dwd').`r`n`r`n(raw tool output)`r`n$out"
-    Set-FixEnabled $true
-    Set-Status 'Burn did NOT verify - see efuse panel.' $C_RED
-    [Windows.Forms.MessageBox]::Show("The burn did not verify (read-back did not match).`n`nThe card is not harmed - writes go only to free space. You can re-plug and try again.`n`nOutput is in the efuse panel.", 'Burn failed', 'OK', 'Warning') | Out-Null
-  }
-}
-
-$btnRefresh.Add_Click({ try { Refresh-List } catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message,'Rescan error') } })
-$btnRead.Add_Click({ try { Read-Card } catch { $grid.Text = "ERROR: $($_.Exception.Message)" } })
-$btnEf.Add_Click({ try { Show-Efuse } catch { $ef.Visible=$true; $ef.Text="ERROR: $($_.Exception.Message)" } })
+# ---------- wiring ----------
+$cmb.Add_SelectedIndexChanged({ try { Read-Card } catch { Set-Status "Read error: $($_.Exception.Message)" $C_RED } })
+$btnRescan.Add_Click({ try { Refresh-List } catch { Set-Status "Scan error: $($_.Exception.Message)" $C_RED } })
+$form.Add_FormClosing({
+  if ($script:critical) { $_.Cancel = $true; Set-Status 'Writing to the card - wait until it finishes, do not close or unplug.' $C_RED }
+})
+$btnA1.Add_Click({ if ($script:busy) { return }; try { Preview } catch { Set-Busy $false; Set-Status "Preview error: $($_.Exception.Message)" $C_RED } })
+$btnA2.Add_Click({ if ($script:busy) { return }; try { Burn-Card } catch { Set-Busy $false; Set-Status "Error: $($_.Exception.Message)" $C_RED } })
+$btnDetails.Add_Click({ try { Toggle-Details (-not $script:detOpen) } catch { Set-Busy $false; Set-Status "Details error: $($_.Exception.Message)" $C_RED } })
 $btnSave.Add_Click({ try { Save-Report } catch { Set-Status "Save error: $($_.Exception.Message)" $C_RED } })
-$btnDry.Add_Click({ try { Dry-Run } catch { $ef.Visible=$true; $ef.Text="ERROR: $($_.Exception.Message)" } })
-$btnBurn.Add_Click({ try { Burn-Card } catch { $btnRead.Enabled=$true; $btnRefresh.Enabled=$true; $btnSave.Enabled=$true; Set-Status "Burn error: $($_.Exception.Message)" $C_RED } })
-$cmb.Add_SelectedIndexChanged({ $script:rpt=$null; Set-FixEnabled $false })
-$cmbDll.Add_SelectedIndexChanged({ $script:rpt=$null; Set-FixEnabled $false })
 $btnLocate.Add_Click({ try { Locate-Dll } catch { Set-Status "Locate error: $($_.Exception.Message)" $C_RED } })
 
-if ($Screenshot) {
-  # render one demo state to a PNG for the docs. DrawToBitmap renders every standard control reliably but
-  # leaves a RichTextBox blank, so we paint the RichTextBox ($grid) ourselves with EM_FORMATRANGE (the Win32
-  # way to print a rich-edit to a DC). Fully off-screen and private - it never captures the desktop.
-  Add-Type @'
-using System; using System.Runtime.InteropServices;
-public static class RtbPrint {
-  [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
-  [DllImport("gdi32.dll")] static extern int GetDeviceCaps(IntPtr hdc, int idx);
-  [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
-  [StructLayout(LayoutKind.Sequential)] struct CHARRANGE { public int cpMin, cpMax; }
-  [StructLayout(LayoutKind.Sequential)] struct FORMATRANGE { public IntPtr hdc, hdcTarget; public RECT rc, rcPage; public CHARRANGE chrg; }
-  const int EM_FORMATRANGE = 0x0439; const int LOGPIXELSX = 88; const int LOGPIXELSY = 90;
-  public static void Paint(IntPtr hwnd, IntPtr hdc, int l, int t, int r, int b) {
-    int dx = GetDeviceCaps(hdc, LOGPIXELSX); if (dx <= 0) dx = 96;
-    int dy = GetDeviceCaps(hdc, LOGPIXELSY); if (dy <= 0) dy = 96;
-    var fr = new FORMATRANGE();
-    fr.hdc = hdc; fr.hdcTarget = hdc;
-    fr.rc = new RECT { Left = l*1440/dx, Top = t*1440/dy, Right = r*1440/dx, Bottom = b*1440/dy }; fr.rcPage = fr.rc;
-    fr.chrg = new CHARRANGE { cpMin = 0, cpMax = -1 };
-    IntPtr p = Marshal.AllocHGlobal(Marshal.SizeOf(fr));
-    Marshal.StructureToPtr(fr, p, false);
-    SendMessage(hwnd, EM_FORMATRANGE, (IntPtr)1, p);
-    SendMessage(hwnd, EM_FORMATRANGE, IntPtr.Zero, IntPtr.Zero);
-    Marshal.FreeHGlobal(p);
-  }
+function Save-Png($f, $path) {
+  $f.ActiveControl = $null; $f.Refresh(); [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 120; [Windows.Forms.Application]::DoEvents()
+  $bmp = New-Object Drawing.Bitmap $f.Width, $f.Height
+  $f.DrawToBitmap($bmp, (New-Object Drawing.Rectangle 0,0,$f.Width,$f.Height))   # off-screen, never the desktop
+  $bmp.Save($path, [Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
 }
-'@
-  $cmb.DrawMode='Normal'; $cmbDll.DrawMode='Normal'   # native render = clean static capture
-  $form.StartPosition='Manual'; $form.Location = New-Object Drawing.Point -3200,-3200
+
+if ($Screenshot) {
+  $cmb.DrawMode = 'Normal'
+  $form.StartPosition = 'Manual'; $form.Location = New-Object Drawing.Point -3200,-3200; $form.ShowInTaskbar = $false
   $form.Show(); [Windows.Forms.Application]::DoEvents()
-  Load-Dlls; Refresh-List; [Windows.Forms.Application]::DoEvents()
+  Load-Dlls; Refresh-List
   switch ($State) {
-    'green' { $cmb.SelectedIndex = 1; Read-Card }
-    'dry'   { $cmb.SelectedIndex = 0; Read-Card; Dry-Run }
-    'efuse' { $cmb.SelectedIndex = 1; Read-Card; Show-Efuse }
-    default { $cmb.SelectedIndex = 0; Read-Card }
+    'green' { $cmb.SelectedIndex = 1 }
+    'plain' { $cmb.SelectedIndex = 2 }
+    'dry'   { $cmb.SelectedIndex = 0; Preview }
+    { $_ -in 'efuse','details' } {
+      $cmb.SelectedIndex = 2
+      $script:detOpen = $true; $detPanel.Height = 320; $detPanel.Visible = $true
+      $form.ClientSize = New-Object Drawing.Size(760, ($BASE_H + 332))
+      Set-Btn $btnDetails ('Details  ' + [char]0x25B4) 'link' $true
+      Fill-Details
+      $detTabs.SelectedIndex = $(if ($State -eq 'efuse') { 1 } else { 0 })
+    }
   }
-  $form.ActiveControl = $null                          # drop the combo's focus highlight
-  $form.Refresh(); [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 150; [Windows.Forms.Application]::DoEvents()
-  # DrawToBitmap renders the whole window (title bar + border), so the client area is offset inside the bitmap;
-  # EM_FORMATRANGE must paint the RichTextBox at that same offset or it rides up onto the banner.
-  $ww = $form.Width; $wh = $form.Height
-  $bmp = New-Object Drawing.Bitmap $ww, $wh
-  $form.DrawToBitmap($bmp, (New-Object Drawing.Rectangle 0,0,$ww,$wh))
-  $pt = $form.PointToScreen([Drawing.Point]::new(0,0)); $ox = $pt.X - $form.Left; $oy = $pt.Y - $form.Top
-  $g = [Drawing.Graphics]::FromImage($bmp); $hdc = $g.GetHdc()
-  [RtbPrint]::Paint($grid.Handle, $hdc, ($grid.Left+$ox), ($grid.Top+$oy), ($grid.Right+$ox), ($grid.Bottom+$oy))
-  $g.ReleaseHdc($hdc); $g.Dispose()
-  $bmp.Save($Screenshot, [Drawing.Imaging.ImageFormat]::Png)
-  $form.Close()
-  return
+  Save-Png $form $Screenshot; $form.Close(); return
 }
 
 try {
   Load-Dlls
-  Refresh-List
+  $form.Add_Shown({ try { Refresh-List } catch { Set-Status "Scan error: $($_.Exception.Message)" $C_RED } })
   [void]$form.ShowDialog()
 } catch {
-  [Windows.Forms.MessageBox]::Show(($_.Exception.Message + "`n`n" + $_.ScriptStackTrace), 'Card Inspector - startup error')
+  [Windows.Forms.MessageBox]::Show(($_.Exception.Message + "`n`n" + $_.ScriptStackTrace), 'RtlPassthru - startup error') | Out-Null
 }
