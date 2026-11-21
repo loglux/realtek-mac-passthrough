@@ -28,7 +28,7 @@ Side 1 is the laptop's job. **This page is about side 2 — because that is wher
 The chip holds only **numbers in its registers**; the drivers read them over USB. The names in the
 third column are what the drivers call those values — nothing is written in the chip.
 
-| register in the chip | bits | value that counts | what the drivers call it |
+| register | bits checked | value that counts | known as |
 |---|---|---|---|
 | `0xCFDB` (1 byte) | bit 1 | 1 | **AUX MAC clone** *(Windows driver)* |
 | `0xCFDB` (1 byte) | bit 0 | 1 | **RT MAC clone** *(Windows driver)*, `PASS_THRU` *(Linux driver)* |
@@ -39,7 +39,7 @@ third column are what the drivers call those values — nothing is written in th
 
 | bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| value of the bit | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
+| hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | meaning | — | — | — | — | — | — | **AUX MAC clone** | **RT MAC clone** |
 
 What we read on real cards:
@@ -147,7 +147,7 @@ In plain words:
 
 ## Side by side
 
-| register in the chip | bits | needed | Windows | Pre-boot / PXE | Linux |
+| register | bits checked | value that counts | Windows | Pre-boot / PXE | Linux |
 |---|---|---|:---:|:---:|:---:|
 | `0xCFDB` | bit 1 *(AUX MAC clone)* | 1 | required | required | not used |
 | `0xCFDB` | bit 0 *(RT MAC clone / `PASS_THRU`)* | 1 | not used | not enough alone | required if the `-AD` test matches |

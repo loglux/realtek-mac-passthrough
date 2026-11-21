@@ -30,7 +30,7 @@ Pass-through needs two things: the laptop offers its MAC (the BIOS option publis
 `_AUXMAC_`), and the driver accepts it for this dock. The driver decides by reading registers in the
 dock's Realtek chip — and **each system requires different values:**
 
-| register in the chip | bits | needed | Windows | Pre-boot / PXE | Linux | called |
+| register | bits checked | value that counts | Windows | Pre-boot / PXE | Linux | known as |
 |---|---|---|:---:|:---:|:---:|---|
 | `0xCFDB` (1 byte) | bit 1 | 1 | required | required | not used | AUX MAC clone ¹, `SELF_POWER` ² |
 | `0xCFDB` (1 byte) | bit 0 | 1 | not used | not enough alone | required if the `-AD` test matches | RT MAC clone ¹, `DOCKING` ², `PASS_THRU` ³ |
@@ -48,7 +48,7 @@ itself holds only the numbers.
 
 | bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| value of the bit | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
+| hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | meaning | — | — | — | — | — | — | **AUX MAC clone** | **RT MAC clone** |
 
 So the byte's value tells you which of the two are set — what we read on real cards:
