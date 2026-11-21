@@ -29,15 +29,19 @@ The good news is that RtlPassthru can burn it in.
 RtlPassthru reads the chip's capability register **`0xCFDB`**. Two of its bits decide pass-through,
 and each system checks its own:
 
-| `0xCFDB` | Windows driver's name | Linux driver's name | checked by |
-|:---:|---|---|---|
-| **bit 0** | RT MAC clone | `PASS_THRU` | **Linux** (`r8152`), on `-AD` chips |
-| **bit 1** | **AUX MAC clone** | — | **Windows** (Realtek driver) and **pre-boot / PXE** |
+| `0xCFDB` | Windows driver | Realtek PG tool | Linux driver | checked by |
+|:---:|---|---|---|---|
+| **bit 0** | RT MAC clone | `DOCKING` | `PASS_THRU` | **Linux** (`r8152`), on `-AD` chips |
+| **bit 1** | **AUX MAC clone** | `SELF_POWER` | — | **Windows** (Realtek driver) and **pre-boot / PXE** |
 
-The names are the drivers' own. The Windows Realtek driver (`rtump64x64`, function
-`NIC_QuerySpecificHwCaps`) reads `0xCFDB` and logs *"Is RT MAC clone support system"* for bit 0 and
-*"Is AUX MAC clone support system"* for bit 1. The Linux driver (`r8152.c`) defines bit 0 as
-`PASS_THRU_MASK`.
+The names are Realtek's and the drivers' own, from three places:
+
+- **Windows driver** (`rtump64x64`, function `NIC_QuerySpecificHwCaps`) — reads `0xCFDB` and logs
+  *"Is RT MAC clone support system"* for bit 0 and *"Is AUX MAC clone support system"* for bit 1.
+- **Realtek's programming tool** (RTUNicPG) — has these bits as configuration fields `DOCKING` and
+  `SELF_POWER`, prints them when it dumps a chip's efuse (`EFUSE_DOCKING = …`) and lists them in its
+  configuration templates.
+- **Linux driver** (`r8152.c`) — defines bit 0 as `PASS_THRU_MASK`.
 
 **RtlPassthru sets both bits — `0x03` — by burning one record into the chip's efuse.** Confirmed on a
 burned RTL8156: after a re-plug it takes the laptop's MAC in Windows, at Dell pre-boot and on Linux

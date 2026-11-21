@@ -37,9 +37,10 @@ in it matter:
 - **bit 0, RT MAC clone** (Linux calls it `PASS_THRU`) — Windows and pre-boot don't rely on it, but
   Linux checks it on `-AD` chips (see below).
 
-The names are the drivers' own: the Windows Realtek driver (`rtump64x64`, `NIC_QuerySpecificHwCaps`)
-logs *"Is RT MAC clone support system"* for bit 0 and *"Is AUX MAC clone support system"* for bit 1;
-the Linux driver defines bit 0 as `PASS_THRU_MASK`.
+The names are Realtek's and the drivers' own: the Windows Realtek driver (`rtump64x64`,
+`NIC_QuerySpecificHwCaps`) logs *"Is RT MAC clone support system"* for bit 0 and *"Is AUX MAC clone
+support system"* for bit 1; Realtek's programming tool (RTUNicPG) calls the same bits `DOCKING` and
+`SELF_POWER`; the Linux driver defines bit 0 as `PASS_THRU_MASK`.
 
 These bits are settings: they can be burned into the chip's efuse, which is exactly what the
 companion tool, RtlPassthru, does (it writes `0x03`, both bits).
