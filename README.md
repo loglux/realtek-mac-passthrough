@@ -44,20 +44,17 @@ itself holds only the numbers.
 
 ### The `0xCFDB` byte
 
-`0xCFDB` is one byte — eight bits, numbered 7 to 0. Only the two lowest matter for pass-through:
+`0xCFDB` is one byte — eight bits, numbered 7 to 0, each either 0 or 1. Only the two lowest matter
+for pass-through. The last two rows are what we read on real cards:
 
 | bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | meaning | — | — | — | — | — | — | **AUX MAC clone** | **RT MAC clone** |
+| **`0x01`** — WAVLINK dock, RTL8156 dongle, as shipped | 0 | 0 | 0 | 0 | 0 | 0 | **0** | 1 |
+| **`0x03`** — UGREEN as shipped; WAVLINK dock, dongle after RtlPassthru | 0 | 0 | 0 | 0 | 0 | 0 | **1** | 1 |
 
-So the byte's value tells you which of the two are set — what we read on real cards:
-
-| card | `0xCFDB` | in bits | bit 1 | bit 0 | Windows and pre-boot |
-|---|:---:|:---:|:---:|:---:|:---:|
-| WAVLINK dock, RTL8156 dongle — as shipped | `0x01` | `0000 0001` | 0 | 1 | ✗ |
-| UGREEN adapter (RTL8153) — as shipped | `0x03` | `0000 0011` | 1 | 1 | ✓ |
-| WAVLINK dock, RTL8156 dongle — after RtlPassthru | `0x03` | `0000 0011` | **1** | 1 | ✓ |
+Windows and pre-boot need bit 1 = 1: the `0x01` cards did not pass the MAC through, the `0x03` ones did.
 
 - `0xCFDB` is filled at every power-on: the chip's built-in default, then any setting records in its
   efuse on top. The `USB_MISC` registers are set at the factory.
