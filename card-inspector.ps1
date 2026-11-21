@@ -109,18 +109,29 @@ function Demo-Py($script, $argline) {
       }
       $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8156 protocol)","STORAGE flash = none","",
         "=== EFUSE (first 256 bytes, one-time programmable) ===",
-        "0x000: 45 c0 00 00 11 22 33 44 66 40 cf db 01 ff ff ff  |E...`"3Df@......|",
-        "0x010: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|","records:",
+        '0x000: 45 c0 00 00 11 22 33 44 66 41 d8 22 98 b3 42 cf  |E...."3DfA."..B.|')
+      # records sit back to back; a burned record is appended right after the last one (the parser stops at the first FF)
+      $lines += $(if ($g -eq 'green') { '0x010: dc 20 00 64 40 cf db 01 40 cf db 03 ff ff ff ff  |. .d@...@.......|' }
+                  else { '0x010: dc 20 00 64 40 cf db 01 ff ff ff ff ff ff ff ff  |. .d@...........|' })
+      $lines += @('0x020: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|',"...","records:",
         "  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)",
-        "  0x009: write [01] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)")
-      if ($g -eq 'green') { $lines += "  0x040: write [03] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)" }
+        "  0x009: write [98 B3] -> reg 0xD822",
+        "  0x00E: write [20 00 64] -> reg 0xCFDC",
+        "  0x014: write [01] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)")
+      if ($g -eq 'green') { $lines += "  0x018: write [03] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)" }
       $lines += ("  => 0xCFDB ends up as 0x{0} (the last record wins)" -f $(if ($g -eq 'green') {'03'} else {'01'}))
+      $lines += "in plain words:"
+      $lines += $(if ($g -eq 'green') { @("  0x000-0x01B  5 setting record(s), listed above; the chip applies them at power-on",
+                                          "  0x01C-0x0FF  all FF = empty: erased / never written (FF is the blank state, not data)") }
+                  else { @("  0x000-0x017  4 setting record(s), listed above; the chip applies them at power-on",
+                           "  0x018-0x0FF  all FF = empty: erased / never written (FF is the blank state, not data)") })
+      $lines += "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself"
       return ($lines -join "`r`n")
     }
     'efuse.py' {
-      $plan = @("append point (dword-aligned): 0x40 (dwaddr 0x10)","current dword @0x40 = 0xFFFFFFFF",
-        "record to write: 40 CF DB 03  (0xCFDB = 0x03)","dword to write @0x40: 0x03DBCF40","after burn 0x40..0x43 = 40 CF DB 03, then 0x44=0xFF (0xFF=EOL)")
-      if ($argline -like '*--burn*') { return (($plan + "=== BURN (irreversible) ===" + "read-back @0x40 = 0x03DBCF40" + "RESULT: OK, matches") -join "`r`n") }
+      $plan = @("append point (dword-aligned): 0x18 (dwaddr 0x6)","current dword @0x18 = 0xFFFFFFFF",
+        "record to write: 40 CF DB 03  (0xCFDB = 0x03)","dword to write @0x18: 0x03DBCF40","after burn 0x18..0x1B = 40 CF DB 03, then 0x1C=0xFF (0xFF=EOL)")
+      if ($argline -like '*--burn*') { return (($plan + "=== BURN (irreversible) ===" + "read-back @0x18 = 0x03DBCF40" + "RESULT: OK, matches") -join "`r`n") }
       return (($plan + "=== DRY RUN: nothing written. Add --burn to write. ===") -join "`r`n")
     }
   }
@@ -659,7 +670,7 @@ if ($Screenshot) {
     'plain' { $cmb.SelectedIndex = 2 }
     'dry'   { $cmb.SelectedIndex = 0; Preview }
     { $_ -in 'efuse','details' } {
-      $cmb.SelectedIndex = 2
+      $cmb.SelectedIndex = 1
       $script:detOpen = $true; $detPanel.Height = 320; $detPanel.Visible = $true
       $form.ClientSize = New-Object Drawing.Size(760, ($BASE_H + 332))
       Set-Btn $btnDetails ('Details  ' + [char]0x25B4) 'link' $true

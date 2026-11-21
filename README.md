@@ -49,10 +49,11 @@ the AUX switch on is the whole fix — and RtlPassthru writes **`0x03`**, both s
 dock that ships enabled: Linux on `-AD` chips needs the RT bit too, and pre-boot was verified with
 `0x03`. *(The exact driver logic is in the [deep dive](#deep-dive).)*
 
-**Why it's a "burn".** `0xCFDB` lives in the chip's **efuse** — a one-time-programmable (OTP) memory:
-each bit can be set once and never cleared. RtlPassthru doesn't edit the existing value; it **appends
-one 4-byte record (`40 CF DB 03`) into blank space** at the end of the efuse, which the chip reloads
-at every power-on. Factory data is never touched, so a failed or interrupted burn simply doesn't take
+**Why it's a "burn".** `0xCFDB` is a register the chip fills at every power-on: first with its own
+built-in default, then with any setting records found in its **efuse** — a one-time-programmable (OTP)
+memory where each bit can be set once and never cleared. RtlPassthru doesn't edit anything that is
+there; it **appends one 4-byte record (`40 CF DB 03`) into blank space** right after the existing
+records, and the chip applies it at every power-on. Factory data is never touched, so a failed or interrupted burn simply doesn't take
 and leaves the card unharmed. Because it's irreversible, the tool always offers a **dry run** first.
 
 ---
@@ -74,8 +75,10 @@ found it by reading the controller directly. Its `0xCFDB` read **`0x01`**: the R
 burned the AUX switch; it now reads **`0x03`** and passes the MAC through, including Dell's pre-boot
 pass-through. It's a **per-unit factory detail — even a premium dock can ship without it.**
 
-**Not sure about yours? Try it on a dongle first.** Any Realtek **RTL8156 (2.5 G)** or
-**RTL8153 (1 G)** USB adapter works the same way. We found that a cheap USB 2.5G dongle
+**Not sure about yours? Try it on a dongle first.** Any Realtek **RTL8156 (2.5 G)** USB adapter works
+the same way. *(RTL8153 (1 G) chips are read and diagnosed too, but their efuse uses a different
+protocol that RtlPassthru does not write yet — the one we have came with the AUX bit already on.)*
+We found that a cheap USB 2.5G dongle
 ([a few pounds on AliExpress](https://www.aliexpress.com/item/1005009390264219.html)) uses the very
 same chip, so we ran the whole read → dry-run → burn flow on it first — it enabled pass-through and
 **kept working perfectly afterwards** (the burn doesn't harm the device). It's an easy, low-cost way
@@ -113,31 +116,42 @@ Then:
 
 3. **Run `Card-Inspector.bat`.** It elevates to Administrator and opens the window.
 
-> RtlPassthru identifies the DLL by its exported command set — it shows which it found and how many
-> procedures it has, and you can point it anywhere with **Locate…**.
+> RtlPassthru finds the DLL by its exported command set and shows the version it uses at the bottom of
+> the window; if it's somewhere else, point at it with **Locate…**.
 
 ## Using it
 
-**Read the card.** Pick your adapter and press **Read card**. You get a plain verdict — green
-**SUPPORTS MAC PASS-THROUGH** or red **NOT SUPPORTED** — with the full reason, like the two
-screenshots at the top.
+**Pick your adapter.** The card is read as soon as you select it. Three tiles answer the real
+question — **does pass-through work, and where:** **Windows**, **Pre-boot / PXE** and **Linux**,
+each green **WORKS** or red **NO**, with the reason underneath (the two screenshots at the top).
+Each system checks a different marker on the card, so the tiles can differ.
 
-If it's red and you want to fix it, the **Permanent fix** box has two steps.
+Below the tiles, **one action card** offers what fits *this* card:
 
-**Step 1 — Dry run.** The burn is irreversible, so always look before you leap. Dry run reads the
-chip, locates the one free slot in the efuse, and shows the exact bytes it *would* write — **without
-touching anything.**
+- **Enable pass-through** — when the AUX bit is missing (the red screenshot at the top). Two steps:
+  - **1 · Preview** — the burn is irreversible, so always look before you leap. Preview reads the
+    chip, finds the free slot in the efuse and shows the exact record it *would* write — **without
+    touching anything.** The Burn button unlocks only after a successful preview.
 
-![Dry run](docs/img/03-dry-run.png)
+    ![Preview](docs/img/03-dry-run.png)
 
-**Step 2 — Burn.** Press **Burn AUX bit** and confirm in the dialog. Keep the adapter plugged in and
-still while it writes and verifies. Then **unplug and re-plug** it — so the chip reloads the efuse —
-and press **Rescan**. It should now read **SUPPORTED**.
+  - **2 · Burn AUX bit** — confirm in the dialog and keep the adapter plugged in while a progress
+    bar shows it writing and verifying (the window can't be closed mid-write). Then **unplug and
+    re-plug** it, so the chip reloads its efuse, and press **Rescan**. The tiles should turn green.
+- **Nothing to do** — everything already works.
+- **Linux: not on this card** — Windows and pre-boot work, but Linux only accepts recognised chip
+  variants (`-AD`, `-BND`, `-BD` or Lenovo) and this chip isn't one. The tool says so plainly
+  rather than offering a fix it can't prove.
 
-Two more buttons help along the way: **Show efuse dump** displays the decoded efuse (read-only), and
-**Save report** writes a plain-text summary.
+  ![Linux not on this card](docs/img/05-linux-not-on-this-card.png)
 
-![Decoded efuse](docs/img/04-efuse-decoded.png)
+**Details ▾** opens a panel under the window with two tabs: *Markers & registers* (every marker each
+system checks, and its value) and *Settings dump* — the chip's efuse in hex with its setting records
+decoded and summarised in plain words (and, if the card has an SPI flash, the start of it — on the
+cards we read that flash holds the driver install disk, not chip settings). **Save report** writes
+all of it to a text file.
+
+![Details: settings dump](docs/img/04-efuse-decoded.png)
 
 ---
 
@@ -206,9 +220,12 @@ Realtek library through `ctypes`:
 Card-Inspector.bat     launcher (self-elevates to admin)
 card-inspector.ps1     the window (PowerShell / WinForms)
 tools/                 Python backend:
-  diag.py                read registers (REV, USB_MISC, 0xCFDB)
-  efuse.py               efuse read / dump / dry-run / burn
+  diag.py                read registers (REV, USB_MISC, 0xCFDB) and the per-system verdict
+  settings.py            read-only settings dump: efuse (RTL8156 and RTL8153 protocols) + SPI flash start
+  efuse.py               efuse dump / dry-run / burn (RTL8156-family efuse)
   rtldiag.py             unified DLL layer (classifies + drives the Realtek library)
+  passthru.py            which marker each system checks -> the verdict (unit-tested)
+  storage.py             where the settings live (unit-tested)
   efuse_core.py          pure efuse record logic (unit-tested)
   dll_list.py            lists/classifies the DLLs by command set
 tests/                 regression tests  ->  python -m pytest
@@ -226,7 +243,8 @@ requirements), which is handy for scripting or a headless box:
 
 ```powershell
 python -I tools/diag.py  {InterfaceGuid}            # read REV, USB_MISC and 0xCFDB
-python -I tools/efuse.py {InterfaceGuid}            # dump the efuse
+python -I tools/settings.py {InterfaceGuid}         # settings dump: efuse records + plain-words summary
+python -I tools/efuse.py {InterfaceGuid}            # dump the efuse (RTL8156 family)
 python -I tools/efuse.py {InterfaceGuid} --plan     # dry run: show what a burn would write
 python -I tools/efuse.py {InterfaceGuid} --burn     # burn 0xCFDB = 0x03   (irreversible)
 python -I tools/dll_list.py                         # list / classify the Realtek DLLs found

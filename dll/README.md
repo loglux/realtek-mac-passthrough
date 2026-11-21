@@ -14,4 +14,4 @@ They live inside Realtek's free **Ethernet Diagnostic Program** — download it 
 (<https://www.realtek.com/download/List?cate_id=585>), unzip it, and take both files from its
 `EXE\64\` folder.
 
-See the main [README](../README.md#get-the-realtek-dll-one-free-download) for the full walkthrough.
+See the main [README](../README.md#setup) for the full walkthrough.
