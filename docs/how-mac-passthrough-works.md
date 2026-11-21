@@ -110,11 +110,14 @@ The key points:
 
 Line the layers up against the card's markers and the puzzle dissolves:
 
-| the card's marker | Windows | PXE | Linux |
+| mark on the card | Windows | Pre-boot / PXE | Linux |
 |---|:---:|:---:|:---:|
-| **AUX bit** (`0xCFDB` bit 1) | checks it | checks it | ignores it |
-| **PASS_THRU bit** (`0xCFDB` bit 0) | not the gate | not enough on its own | checks it — `-AD` chips only |
-| **chip variant** (`-AD` / `-BND` / `-BD` / Lenovo) | ignores it | ignores it | checks it |
+| **AUX MAC clone bit** — `0xCFDB` bit 1 | required | required | not used |
+| **RT MAC clone bit** — `0xCFDB` bit 0 (`PASS_THRU` in Linux) | not used | not enough alone | required on `-AD` chips |
+| **chip variant** — `-AD`, `-BND`, `-BD` or Lenovo | not used | not used | required |
+
+*"Not enough alone"*: a card with only bit 0 set (`0x01`) did not take the laptop's MAC at pre-boot;
+with both bits (`0x03`) it did.
 
 **Windows and PXE look at the AUX bit; Linux looks at the chip variant.** They are checking
 *different markers*, so the same card can be accepted by one system and refused by another. Nothing
