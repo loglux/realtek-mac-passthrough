@@ -81,6 +81,46 @@ def describe_pg_stamp(data: bytes) -> str:
     if len(data) != 4:
         return ""
     return f"PG tool {data[1]}.{data[0]:02d}, CFG {int.from_bytes(data[2:4], 'little')}"
+# --- RTL8153-family (older) efuse: 17-bit cells, command word at 0xDD02 -------------------------------------
+# Ported 1:1 from RTUNicPG: FUN_14001c630 (write encode) and FUN_14001c8d0 (read decode). Each 16-bit word is
+# stored in a 17-bit cell with one "hole" bit whose position depends on the word address; the encoder inserts
+# it (set to 1 = leave unprogrammed), the decoder removes it. Byte writes go through a word whose other byte
+# is 0xFF (= untouched): programming only clears bits, 1s are no-ops.
+
+def efuse8153_shift(waddr: int) -> int:
+    s = waddr & 0xF
+    if waddr & 0x10:
+        s = 0x10 - s
+    return s
+
+
+def efuse8153_encode_write(waddr: int, word: int) -> int:
+    """The 0xDD00 dword that programs 16-bit `word` into efuse word `waddr` (write command 0x4000 | waddr)."""
+    s = efuse8153_shift(waddr)
+    v = ((word >> s) << (s + 1)) & 0xFFFFFFFF
+    if s:
+        v |= ((word << (32 - s)) & 0xFFFFFFFF) >> (32 - s)
+    low = v & 0xFFFF
+    if (v >> 16) & 1:
+        low |= 0x800000
+    hole = 0x17 if s == 0x10 else s
+    return ((1 << hole) | ((waddr & 0x7F | 0x4000) << 16) | low) & 0xFFFFFFFF
+
+
+def efuse8153_decode_read(v: int) -> int:
+    """16-bit word from the 0xDD00 dword after a read command (its high word echoes the word address)."""
+    s = efuse8153_shift((v >> 16) & 0x1F)
+    cell = ((v >> 7) & 0x10000) | (v & 0xFFFF)
+    w = ((cell >> (s + 1)) << s) & 0xFFFFFFFF
+    if s:
+        w |= ((cell << (32 - s)) & 0xFFFFFFFF) >> (32 - s)
+    return w & 0xFFFF
+
+
+def efuse8153_write_word(addr: int, old_byte: int, new_byte: int) -> int:
+    """EFuseWrite's word for one byte: (~old | new) in this byte's half, 0xFF (untouched) in the other half."""
+    b = (~old_byte | new_byte) & 0xFF
+    return (b << 8 | 0x00FF) if addr & 1 else (b | 0xFF00)
 
 
 FLASH_RECORDS_START = 0x008   # SPI flash: an 8-byte header, then autoload records until the first 0xFF

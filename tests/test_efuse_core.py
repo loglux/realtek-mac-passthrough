@@ -98,6 +98,31 @@ def test_pg_stamp():
     stamp = next(r for r in ec.parse_autoload_records(ETH6_EFUSE) if r["reg"] == ec.PG_STAMP_REG)
     assert ec.describe_pg_stamp(stamp["data"]) == "PG tool 2.15, CFG 1025"
     assert ec.describe_pg_stamp(b"\x01") == ""
+def _cell_as_read(waddr, dword):
+    """What a read of `waddr` returns after `dword` was programmed: the 17-bit cell + the address echo."""
+    cell_lo, cell_b16 = dword & 0xFFFF, (dword >> 23) & 1
+    return ((waddr & 0x7F) | (cell_b16 << 7)) << 16 | cell_lo
+
+
+def test_efuse8153_encode_decode_round_trip():
+    for waddr in range(0x80):
+        for word in (0x0000, 0xFFFF, 0x1234, 0xA55A, 0x00FF, 0xFF00, 0x8001, 0xFF41, 0xD8FF, 0x00FF):
+            assert ec.efuse8153_decode_read(_cell_as_read(waddr, ec.efuse8153_encode_write(waddr, word))) == word
+
+
+def test_efuse8153_known_commands():
+    # The exact 0xDD00 dwords the -AD marker burn sends (checked against the dry run on a real RTL8153).
+    assert ec.efuse8153_encode_write(0x00, ec.efuse8153_write_word(0x01, 0xFF, 0xD8)) == 0x4080B1FF
+    assert ec.efuse8153_encode_write(0x01, ec.efuse8153_write_word(0x02, 0xFF, 0x1A)) == 0x4081FE36
+    assert ec.efuse8153_encode_write(0x01, ec.efuse8153_write_word(0x03, 0xFF, 0x00)) == 0x400101FF
+    assert ec.efuse8153_encode_write(0x02, ec.efuse8153_write_word(0x04, 0xFF, 0x10)) == 0x4082FE24
+    assert ec.efuse8153_encode_write(0x00, ec.efuse8153_write_word(0x00, 0xFF, 0x41)) == 0x4080FE83
+
+
+def test_efuse8153_blank_reads_ff():
+    # A blank cell reads back 0xFFFF on a real UGREEN (raw dword 0x00..FFFF, bit16 = 1 in hi bit 7).
+    assert ec.efuse8153_decode_read(0x0080FFFF) == 0xFFFF
+    assert ec.efuse8153_decode_read(0x00DFFFFF) == 0xFFFF
 
 
 def test_parse_records_unknown_type_stops():

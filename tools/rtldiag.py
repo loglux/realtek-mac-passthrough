@@ -13,7 +13,7 @@ import os
 import struct
 from ctypes import wintypes
 
-from efuse_core import byte_enable
+from efuse_core import byte_enable, efuse8153_decode_read, efuse8153_encode_write, efuse8153_write_word
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(os.path.dirname(_HERE))   # CardInspector/tools -> CardInspector -> repo root
@@ -435,14 +435,27 @@ class RtlDiag:
             raise EfuseUnavailable("efuse controller does not answer the RTL8153 protocol either. Nothing was written.")
         if ((v >> 16) & 0x7F) != ((addr >> 1) & 0x7F):
             raise EfuseUnavailable("efuse controller did not echo the requested address - read not trusted.")
-        sh = (v >> 16) & 0xF
-        if (v >> 16) & 0x10:
-            sh = 0x10 - sh
-        cell = ((v >> 7) & 0x10000) | (v & 0xFFFF)
-        word = ((cell >> (sh + 1)) << sh) & 0xFFFFFFFF
-        if sh:
-            word |= ((cell << (32 - sh)) & 0xFFFFFFFF) >> (32 - sh)
+        word = efuse8153_decode_read(v)
         return (word >> 8 if addr & 1 else word) & 0xFF
+
+    def efuse8153_write_byte(self, addr, new):
+        """Older-family efuse byte write (RTUNicPG EFuseWrite, FUN_14001cc90). PERMANENT. Returns the read-back.
+
+        Enable write (0xE85B |= 0xC4), send the encoded dword to 0xDD00, wait for bit30 to clear, disable write
+        (always - the tool skips that on errors), then read the byte back."""
+        old = self.efuse8153_read_byte(addr)
+        dword = efuse8153_encode_write(addr >> 1, efuse8153_write_word(addr, old, new))
+        self.efuse_enable()
+        try:
+            self.dwrite(0xDD00, 4, dword.to_bytes(4, "little"))
+            for _ in range(self.EFUSE_POLLS):
+                if not int.from_bytes(self.dread(0xDD00, 4), "little") & 0x40000000:
+                    break
+            else:
+                raise EfuseUnavailable("efuse write did not finish (busy bit never cleared).")
+        finally:
+            self.efuse_disable()
+        return self.efuse8153_read_byte(addr)
 
     def efuse8153_dump(self, nbytes=192):
         """User efuse of an older-family chip (RTUNicPG reads 192 bytes for RTL8153B)."""
