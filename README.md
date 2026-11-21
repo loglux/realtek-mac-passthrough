@@ -29,10 +29,15 @@ The good news is that RtlPassthru can burn it in.
 RtlPassthru reads the chip's capability register **`0xCFDB`**. Two of its bits decide pass-through,
 and each system checks its own:
 
-| `0xCFDB` | Realtek's name | checked by |
-|:---:|---|---|
-| **bit 0** | `DOCKING` — the Linux driver calls it `PASS_THRU` | **Linux** (`r8152`), on `-AD` chips |
-| **bit 1** | `SELF_POWER` — the Windows driver reads it as the **AUX MAC clone** flag | **Windows** (Realtek driver) and **pre-boot / PXE** |
+| `0xCFDB` | Windows driver's name | Linux driver's name | checked by |
+|:---:|---|---|---|
+| **bit 0** | RT MAC clone | `PASS_THRU` | **Linux** (`r8152`), on `-AD` chips |
+| **bit 1** | **AUX MAC clone** | — | **Windows** (Realtek driver) and **pre-boot / PXE** |
+
+The names are the drivers' own. The Windows Realtek driver (`rtump64x64`, function
+`NIC_QuerySpecificHwCaps`) reads `0xCFDB` and logs *"Is RT MAC clone support system"* for bit 0 and
+*"Is AUX MAC clone support system"* for bit 1. The Linux driver (`r8152.c`) defines bit 0 as
+`PASS_THRU_MASK`.
 
 **RtlPassthru sets both bits — `0x03` — by burning one record into the chip's efuse.** Confirmed on a
 burned RTL8156: after a re-plug it takes the laptop's MAC in Windows, at Dell pre-boot and on Linux
@@ -70,8 +75,8 @@ The one that set this off was not a bargain-bin part — it was the **WAVLINK Th
 *Photo: WAVLINK (manufacturer). Source: the product pages linked above.*
 
 Its 2.5 Gigabit Ethernet is a **Realtek RTL8156** — WAVLINK's spec sheet never names the chip; we
-found it by reading the controller directly. Its `0xCFDB` read **`0x01`**: `DOCKING` on, the AUX bit
-off — and on a Dell with *MAC Address Pass-Through* enabled, this expensive dock did **not** take the
+found it by reading the controller directly. Its `0xCFDB` read **`0x01`**: RT MAC clone on, AUX MAC
+clone off — and on a Dell with *MAC Address Pass-Through* enabled, this expensive dock did **not** take the
 laptop's MAC, in Windows or at pre-boot. We burned the AUX bit; it now reads **`0x03`** and passes
 the MAC through, including Dell's pre-boot pass-through. **Even a premium dock can ship without it.**
 
@@ -163,8 +168,8 @@ driver (`rtump64x64`) reads `0xCFDB` and builds its own internal byte, `AUXMacTy
 weight of the two bits** as it does:
 
 ```
-0xCFDB  bit 0  DOCKING     ->  AUXMacType  bit of weight 2
-0xCFDB  bit 1  AUX clone   ->  AUXMacType  bit of weight 1   <- the driver tests this one (& 1)
+0xCFDB  bit 0  "Is RT MAC clone support system"   ->  AUXMacType |= 2
+0xCFDB  bit 1  "Is AUX MAC clone support system"  ->  AUXMacType |= 1   <- the driver tests this one (& 1)
 ```
 
 The Windows driver applies pass-through for exactly `AUXMacType & 1`, and that bit is fed **only** by
