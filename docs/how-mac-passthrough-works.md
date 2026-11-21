@@ -33,10 +33,10 @@ the chip, and — this is the crux — *different* layers look at *different* on
 At power-on the chip loads a capability byte, register `0xCFDB`, from its internal memory. Two bits
 in it matter:
 
-- **bit 1, AUX-clone** — the one that drives standard `_AUXMAC_` pass-through on Windows and at
-  pre-boot.
-- **bit 0, RT-clone** (Linux calls it `PASS_THRU`) — Windows and pre-boot don't rely on it, but Linux
-  checks it on `-AD` chips (see below).
+- **bit 1** — Realtek's configuration tool names it `SELF_POWER`; the Windows driver reads it as the
+  **AUX MAC clone** flag. It drives standard `_AUXMAC_` pass-through on Windows and at pre-boot.
+- **bit 0** — Realtek's name is `DOCKING`, and Linux calls it `PASS_THRU`. Windows and pre-boot don't
+  rely on it, but Linux checks it on `-AD` chips (see below).
 
 These bits are settings: they can be burned into the chip's efuse, which is exactly what the
 companion tool, RtlPassthru, does (it writes `0x03`, both bits).

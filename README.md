@@ -26,15 +26,17 @@ The good news is that RtlPassthru can burn it in.
 
 ## How it works
 
-RtlPassthru reads the chip's capability register **`0xCFDB`** and checks its two pass-through bits:
+RtlPassthru reads the chip's capability register **`0xCFDB`**. Two of its bits decide pass-through,
+and each system checks its own:
 
-| bit | name | needed for |
+| `0xCFDB` | Realtek's name | checked by |
 |:---:|---|---|
-| **bit 1** | AUX-clone | **Windows** and **pre-boot / PXE** |
-| **bit 0** | RT-clone (`PASS_THRU` in Linux) | **Linux**, on `-AD` chips |
+| **bit 0** | `DOCKING` — the Linux driver calls it `PASS_THRU` | **Linux** (`r8152`), on `-AD` chips |
+| **bit 1** | `SELF_POWER` — the Windows driver reads it as the **AUX MAC clone** flag | **Windows** (Realtek driver) and **pre-boot / PXE** |
 
-**If bit 1 is missing, RtlPassthru sets both bits — `0x03` — by burning one record into the chip's
-efuse.** After a re-plug the chip loads it, and Windows and pre-boot take the laptop's MAC.
+**RtlPassthru sets both bits — `0x03` — by burning one record into the chip's efuse.** Confirmed on a
+burned RTL8156: after a re-plug it takes the laptop's MAC in Windows, at Dell pre-boot and on Linux
+(Ubuntu).
 
 Linux has one more condition: the chip must be a recognised variant — `-AD`, `-BND`, `-BD` or a
 Lenovo chip. That is a factory marker; RtlPassthru reads it and shows it, but does not change it.
@@ -68,9 +70,9 @@ The one that set this off was not a bargain-bin part — it was the **WAVLINK Th
 *Photo: WAVLINK (manufacturer). Source: the product pages linked above.*
 
 Its 2.5 Gigabit Ethernet is a **Realtek RTL8156** — WAVLINK's spec sheet never names the chip; we
-found it by reading the controller directly. Its `0xCFDB` read **`0x01`**: the RT switch on, AUX off
-— and on a Dell with *MAC Address Pass-Through* enabled, this expensive dock did **not** take the
-laptop's MAC, in Windows or at pre-boot. We burned the AUX switch; it now reads **`0x03`** and passes
+found it by reading the controller directly. Its `0xCFDB` read **`0x01`**: `DOCKING` on, the AUX bit
+off — and on a Dell with *MAC Address Pass-Through* enabled, this expensive dock did **not** take the
+laptop's MAC, in Windows or at pre-boot. We burned the AUX bit; it now reads **`0x03`** and passes
 the MAC through, including Dell's pre-boot pass-through. **Even a premium dock can ship without it.**
 
 **Not sure about yours? Try it on a dongle first.** A cheap USB 2.5G dongle
@@ -161,12 +163,12 @@ driver (`rtump64x64`) reads `0xCFDB` and builds its own internal byte, `AUXMacTy
 weight of the two bits** as it does:
 
 ```
-0xCFDB  RT-clone  (weight 1)  ->  AUXMacType  bit of weight 2
-0xCFDB  AUX-clone (weight 2)  ->  AUXMacType  bit of weight 1   <- the driver tests this one (& 1)
+0xCFDB  bit 0  DOCKING     ->  AUXMacType  bit of weight 2
+0xCFDB  bit 1  AUX clone   ->  AUXMacType  bit of weight 1   <- the driver tests this one (& 1)
 ```
 
 The Windows driver applies pass-through for exactly `AUXMacType & 1`, and that bit is fed **only** by
-AUX-clone. So a factory `0x01` becomes `AUXMacType = 2` (no pass-through), and `0x03` becomes
+`0xCFDB` bit 1. So a factory `0x01` becomes `AUXMacType = 2` (no pass-through), and `0x03` becomes
 `AUXMacType = 3` (pass-through).
 
 **It works below the OS, not just inside it.** The marker sits in the chip itself, so pass-through
