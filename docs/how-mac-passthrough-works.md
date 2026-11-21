@@ -40,8 +40,10 @@ third column are what the drivers call those values — nothing is written in th
 | bit | 7 | 6 | 5 | 4 | 3 | 2 | **1** | **0** |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
-| meaning | — | — | — | — | — | — | **AUX MAC clone** | **RT MAC clone** |
-| for pass-through | — | — | — | — | — | — | **1** | **1** |
+| Windows driver | — | — | — | — | — | — | AUX MAC clone | RT MAC clone |
+| Realtek PG tool | — | — | — | — | — | — | `SELF_POWER` | `DOCKING` |
+| Linux driver | — | — | — | — | — | — | — | `PASS_THRU` |
+| **set to enable pass-through** | — | — | — | — | — | — | **1** | **1** |
 
 Bit 1 is what Windows and pre-boot need, bit 0 what Linux needs on `-AD` chips; the other bits are
 not checked. RtlPassthru sets both — `0x03`.
