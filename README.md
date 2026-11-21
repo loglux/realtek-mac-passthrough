@@ -1,4 +1,4 @@
-# RtlPassthru — enable MAC Address Pass-Through on a Realtek dock or dongle
+# Enable MAC Address Pass-Through on Thunderbolt / USB docking stations (and dongles)
 
 **Thunderbolt and USB-C docks, and USB Ethernet dongles, use a Realtek chip for their wired network.
 Many ship with MAC Address Pass-Through switched off. RtlPassthru checks your adapter and switches it
