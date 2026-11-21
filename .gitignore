@@ -1,0 +1,14 @@
+# Realtek's diagnostic DLLs are their property — never commit them. Users supply their own
+# (see README: "Get the Realtek DLL"). The dll/ folder ships empty, with just its placeholder.
+dll/**/*.dll
+dll/**/*.DLL
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# local scratch
+*.tmp
+*.log

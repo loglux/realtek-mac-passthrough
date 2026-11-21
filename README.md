@@ -1,149 +1,229 @@
-# Realtek USB Dock — MAC Address Pass-Through Enabler (Windows)
+# RtlPassthru — enable MAC Address Pass-Through on a Realtek dock or dongle
 
-Enable **MAC Address Pass-Through** for a USB network dock based on a **Realtek USB NIC**
-(RTL8156 / RTL8153 family) on Windows — even for a generic, non-branded dock that the driver
-would normally refuse to pass through.
+**Thunderbolt and USB-C docks, and USB Ethernet dongles, use a Realtek chip for their wired network.
+Many ship with MAC Address Pass-Through switched off. RtlPassthru checks your adapter and switches it
+on.**
 
-![Realtek MAC Pass-Through GUI](docs/screenshot.png)
+When you dock a laptop, the dock's Ethernet port goes online under *its own* MAC address, not the
+laptop's. On corporate and campus networks that breaks things — access control, licensing, DHCP
+reservations and PXE/network boot are all tied to the **laptop's built-in** MAC. **MAC Address
+Pass-Through** is the fix: the dock borrows the laptop's MAC, so the network sees the same machine
+whether you're docked or not. Business laptops offer it through a firmware value called `_AUXMAC_` —
+Dell's BIOS setting *"MAC Address Pass-Through"*, and the same feature on Lenovo and HP.
 
-## The problem
-Business laptops (Dell, Lenovo, HP) can publish a *pass-through MAC* through firmware
-(the BIOS **MAC Address Pass-Through** feature): whatever dock/USB Ethernet you plug in
-presents the laptop's identity to the network, so NAC / DHCP / policies recognize the machine.
+Here's the catch, and the reason this tool exists: **some docks simply don't accept it — and it has
+nothing to do with price.** The capability is just one bit inside the Realtek chip, and on some units
+it's left unset at the factory. We hit it on a **premium Thunderbolt 4 dock**. The good news is that
+it's exactly one bit — and RtlPassthru can burn it in.
 
-The Realtek Windows driver reads that MAC from the ACPI **DSDT**, but by default it applies it
-**only for docks it recognizes as a branded vendor dock** (Dell/Lenovo). A generic dock
-(e.g. WAVLINK) with the *same* Realtek chip is skipped and keeps its own MAC.
-
-This tool flips the driver's built-in override so it applies the firmware-provided MAC
-**regardless of dock branding** — a pure, reversible registry change.
-
-## Requirements
-- A dock/adapter with a **Realtek USB NIC** (RTL8156 / RTL8156B / RTL8153 …), USB VID `0x0BDA`, using the Realtek Windows driver.
-- A host (laptop) with **BIOS "MAC Address Pass-Through" enabled** so firmware publishes the MAC in ACPI DSDT. The tool checks this for you.
-- Windows, Administrator rights.
-
-## Usage
-Two ways to use it — pick one. Both read everything from the system and are fully reversible.
-
-### GUI  (recommended)
-In the **`gui/`** folder, run **`passthrough-GUI.bat`** (it elevates to Administrator). A small window
-leads with an **Analysis checklist** — the step-by-step chain that produces the verdict, each condition
-marked ✓ / ✗ / ~ (dock adapter, dock capable, host feature, host MAC, recipe) so you can see *why* at a
-glance and which side is the bottleneck. Below it, the dock is identified as a **device** — read live
-from the system: what it is (e.g. *Thunderbolt 4 DisplayLink dock*), how it is connected (**Thunderbolt**
-vs plain USB), the **chip + speed** (e.g. *RTL8156B · 2.5GbE*), its USB id, MAC and link state — plus the
-host (BIOS) facts and **Enable / Revert / Refresh** buttons.
-
-### CLI  (scripting / automation)
-In the **`cli/`** folder, as Administrator:
-
-| Script | Action |
+| It can't (yet) | …now it can |
 |---|---|
-| `passthrough-ENABLE.bat` | enable pass-through |
-| `passthrough-STATUS.bat` | show current state |
-| `passthrough-REVERT.bat` | restore the dock's own MAC |
+| ![Not supported](docs/img/01-not-supported.png) | ![Supported](docs/img/02-supported.png) |
 
-### After Enable / Revert
-Physically **unplug and replug the dock** (Thunderbolt/USB) so the driver re-reads the setting,
-then verify with `getmac /v` — the Realtek dock NIC now shows the pass-through MAC.
+> Screenshots use sample data (a made-up MAC). Nothing personal is shown.
 
-> First time only: enable **MAC Address Pass-Through** in the laptop BIOS (*System Unique MAC Address*
-> or *Integrated NIC MAC*), and let Windows install the Realtek driver for the dock.
+---
 
-## Status at a glance
-The tool reads this host's **live ACPI DSDT** (standard `GetSystemFirmwareTable` API — nothing hardcoded per
-machine) and reports **two independent axes**, because they really are separate things:
+## How it works
 
-- **Host (BIOS):** does the firmware have the pass-through feature, and is it on? — *supported & ON* (publishes a
-  MAC) / *supported but OFF* (enable it in BIOS setup) / *no feature at all* (e.g. many desktops & NUCs). Detected
-  by the known firmware plumbing: Dell's `AMAC` or Lenovo's `MACA` ACPI object (or an `_AUXMAC_` / `_RTXMAC_` marker).
-- **Dock (adapter):** does the dock apply pass-through **natively**, or does it need the registry **recipe**? — a
-  branded dock the driver auto-recognizes works on its own; a **generic** dock (same Realtek chip, no vendor marker)
-  is skipped by the driver and needs this tool's recipe. When pass-through is active, the tool shows which of the two
-  it is; a dormant generic dock just shows *needs recipe (Enable)*.
+At power-on the chip loads a capability byte — register **`0xCFDB`** — from its internal memory, and
+the Realtek driver passes the laptop's MAC through **only if the right bit in that byte is set.**
 
-The top banner is the **combined verdict** and names the bottleneck.
+`0xCFDB` carries two independent switches:
 
-| Host (BIOS) | Dock | Banner |
-|---|---|---|
-| supported, ON | active, via recipe | 🟢 **PASS-THROUGH ACTIVE** (via this tool) |
-| supported, ON | active, native | 🟢 **PASS-THROUGH ACTIVE** (native dock) |
-| supported, ON | generic, not applied | 🔵 **READY** — host OK, press Enable |
-| supported, OFF | — | 🟠 **ENABLE IN BIOS** — feature present but off |
-| no feature | — (dock is fine) | ⚪ **NO HOST PASS-THROUGH** (BIOS limitation) |
-| — | not found | ⚪ **DOCK NIC NOT FOUND** |
+- **AUX-clone** — the standard `_AUXMAC_` pass-through used by Dell / Lenovo / HP. **This is the gate.**
+- **RT-clone** — a separate Realtek-only clone mode. It does **not** affect pass-through.
 
-> On a host with **no** pass-through feature, firmware can't supply a MAC, so there is nothing for this tool to
-> apply — the dock itself is fine. If you still want the dock NIC to present a specific MAC on that host (Windows
-> only, same as pass-through would achieve), set it manually with the standard Windows adapter property — see
-> **[Host without the feature](#host-without-the-feature)**.
+What decides it is **which switch is on, not how big the number looks:**
 
-The app in each state — native dock (active), ready (host OK / dock needs recipe), host feature off, host has no feature, nothing plugged:
+| `0xCFDB` | AUX-clone | pass-through? | what it is |
+|:---:|:---:|:---:|---|
+| `0x00` | off | ✗ | blank chip |
+| `0x01` | off | ✗ | **RT-clone only — what an unsupported dock ships with** |
+| `0x02` | on  | ✓ | AUX only |
+| `0x03` | on  | ✓ | both switches — **what RtlPassthru writes** |
 
-| | |
-|:--:|:--:|
-| ![ACTIVE - native / auto-recognized](docs/tiers/active-native.png) | ![READY - press Enable](docs/tiers/ready.png) |
-| ![BIOS supports pass-through but it is disabled](docs/tiers/disabled.png) | ![BIOS has no pass-through feature](docs/tiers/unsupported.png) |
-| ![Dock not found](docs/tiers/notfound.png) | |
+So an unsupported dock usually reads **`0x01`**: a clone bit *is* set, which makes it look capable —
+but it's the **wrong** switch (RT instead of AUX), and pass-through silently never happens. Turning
+the AUX switch on — `0x02`, or `0x03` to keep both — is the whole fix. *(The exact driver logic is in
+the [deep dive](#deep-dive).)*
 
-## How it works (short)
-The driver scans the ACPI **DSDT** for a literal string `_AUXMAC_#AABBCCDDEEFF#` placed there by
-the firmware, then applies that MAC to the NIC. These per-adapter registry values (REG_DWORD)
-tell it to do so regardless of dock brand:
+**Why it's a "burn".** `0xCFDB` lives in the chip's **efuse** — a one-time-programmable (OTP) memory:
+each bit can be set once and never cleared. RtlPassthru doesn't edit the existing value; it **appends
+one 4-byte record (`40 CF DB 03`) into blank space** at the end of the efuse, which the chip reloads
+at every power-on. Factory data is never touched, so a failed or interrupted burn simply doesn't take
+and leaves the card unharmed. Because it's irreversible, the tool always offers a **dry run** first.
 
-| Value | Set to | Meaning |
-|---|---|---|
-| `EnableManualCloneMAC` | `1` | Don't auto-detect the vendor by chip — use the registry type |
-| `AUXMacType`           | `3` | Treat the dock as pass-through capable (bitmask of both methods) |
-| `AUXMacSupportVer`     | `1` | Protocol version |
-| `EnableCloneMAC`       | `1` | Enable the clone (already the default) |
+---
 
-The MAC itself always comes from the firmware's DSDT entry — these tools never set a MAC value.
-Full mechanism: [`docs/HOW-IT-WORKS.md`](docs/HOW-IT-WORKS.md).
+## The dock that started this
 
-## Scope & limitations
-- **Realtek USB NICs only.** Docks with ASIX / Aquantia / other chips use different drivers and are unaffected. The tool acts only on a confirmed Realtek USB adapter (USB vendor `0x0BDA`).
-- **The host must publish the MAC.** With BIOS pass-through *disabled* (no `_AUXMAC_` in DSDT) there is nothing to apply; the tool detects this and tells you. Hosts without this firmware feature would need a DSDT override (advanced; out of scope here).
-- **Windows (post-boot) layer only.** Pass-through has two independent layers: the host firmware can also apply the MAC *before* the OS (pre-boot / PXE), and the Realtek chip is accepted there only if it is a vendor-recognized variant (an eFuse pass-through bit or an OEM chip bin). This tool forces the **Windows** layer via the registry recipe, which works regardless of that hardware marker — but only after Windows loads. It does **not** affect pre-boot/PXE; that remains the firmware's own decision.
-- Verified on a Dell Latitude 5530 + WAVLINK Thunderbolt dock (Realtek RTL8156B), Realtek driver `rtu56cx22x64`. The keys are shared across Realtek's Windows drivers (`rtump*`, `rtu*cx*`).
+The one that set this off was not a bargain-bin part — it was the **WAVLINK ThunderDock Quattuor Pro
+(WL-UTD41)**, a premium 40 Gbps, 15-in-1 Thunderbolt 4 docking station
+([WAVLINK](https://www.wavlink.com/en_us/product/WL-UTD41.html) ·
+[Amazon](https://www.amazon.co.uk/dp/B0CMHN2MZH)).
 
-## Host without the feature
-If the tool reports **BIOS HAS NO PASS-THROUGH**, the firmware has no MAC pass-through feature, so there is no
-firmware MAC to apply and this tool's Enable does nothing. Pass-through can't be *created* from the OS side
-without modifying firmware (out of scope). If you only need the dock NIC to present a specific MAC **in Windows**
-(the same practical result pass-through gives — Windows only, not pre-boot/PXE), set it manually with the standard
-Windows adapter property, e.g. make the dock present this machine's onboard NIC MAC:
+![WAVLINK ThunderDock Quattuor Pro (WL-UTD41)](docs/img/wavlink-dock.jpg)
 
-```powershell
-# Replace the adapter name and the 12-hex MAC (here: this host's onboard NIC MAC, no separators)
-Set-NetAdapterAdvancedProperty -Name 'Ethernet 2' -RegistryKeyword NetworkAddress -RegistryValue 1C697AD98A33
-# Undo:
-Remove-NetAdapterAdvancedProperty -Name 'Ethernet 2' -RegistryKeyword NetworkAddress
+*Photo: WAVLINK (manufacturer). Source: the product pages linked above.*
+
+Its 2.5 Gigabit Ethernet is a **Realtek RTL8156** — WAVLINK's spec sheet never names the chip; we
+found it by reading the controller directly. Its `0xCFDB` read **`0x01`**: the RT switch on, AUX off
+— so this expensive dock would **not** pass the laptop's MAC through, in Windows or at pre-boot. We
+burned the AUX switch; it now reads **`0x03`** and passes the MAC through, including Dell's pre-boot
+pass-through. It's a **per-unit factory detail — even a premium dock can ship without it.**
+
+**Not sure about yours? Try it on a dongle first.** Any Realtek **RTL8156 (2.5 G)** or
+**RTL8153 (1 G)** USB adapter works the same way. We found that a cheap USB 2.5G dongle
+([a few pounds on AliExpress](https://www.aliexpress.com/item/1005009390264219.html)) uses the very
+same chip, so we ran the whole read → dry-run → burn flow on it first — it enabled pass-through and
+**kept working perfectly afterwards** (the burn doesn't harm the device). It's an easy, low-cost way
+to get comfortable with the process before touching an expensive dock.
+
+<img src="docs/img/dongle.jpg" alt="An inexpensive USB-A 2.5G dongle" width="360">
+
+*An inexpensive USB-A 2.5G dongle with the same Realtek RTL8156 as the dock — a handy thing to try
+the process on first. Photo: AliExpress listing (linked above).*
+
+---
+
+## Setup
+
+RtlPassthru runs on **Windows x64** and needs **[Python 3.8+](https://www.python.org/downloads/)**
+installed — it won't run without it (standard library only, nothing to `pip install`). Your adapter
+must also be on a **genuine Realtek driver** (the `rtump64x64` family — it appears as
+*"Realtek … USB … Family Controller"*); the generic Microsoft USB driver won't work. Windows Update
+usually installs a Realtek one on its own, and if it didn't, you can grab it from the same Realtek
+page as the DLL in step 2.
+
+Then:
+
+1. **Get RtlPassthru.** Download the latest **[release](../../releases)** `.zip` and unzip it anywhere
+   (or clone this repo).
+
+2. **Add the Realtek DLL.** RtlPassthru drives Realtek's own diagnostic library
+   (`RtlDirectDiagLib64.dll` with its companion `RTDiagLibV2.dll`) — Realtek's property, so it is
+   **not bundled here.** Grab your own copy (one free download):
+   - Open Realtek's **USB Ethernet Family Controller Software** page:
+     <https://www.realtek.com/download/List?cate_id=585>
+   - Download the **Ethernet Diagnostic Program** (we used **v2.0.8.3**, ~11 MB) and unzip it.
+   - From its **`EXE\64\`** folder, copy **both** `RtlDirectDiagLib64.dll` and `RTDiagLibV2.dll` into
+     RtlPassthru's **`dll/`** folder.
+
+3. **Run `Card-Inspector.bat`.** It elevates to Administrator and opens the window.
+
+> RtlPassthru identifies the DLL by its exported command set — it shows which it found and how many
+> procedures it has, and you can point it anywhere with **Locate…**.
+
+## Using it
+
+**Read the card.** Pick your adapter and press **Read card**. You get a plain verdict — green
+**SUPPORTS MAC PASS-THROUGH** or red **NOT SUPPORTED** — with the full reason, like the two
+screenshots at the top.
+
+If it's red and you want to fix it, the **Permanent fix** box has two steps.
+
+**Step 1 — Dry run.** The burn is irreversible, so always look before you leap. Dry run reads the
+chip, locates the one free slot in the efuse, and shows the exact bytes it *would* write — **without
+touching anything.**
+
+![Dry run](docs/img/03-dry-run.png)
+
+**Step 2 — Burn.** Press **Burn AUX bit** and confirm in the dialog. Keep the adapter plugged in and
+still while it writes and verifies. Then **unplug and re-plug** it — so the chip reloads the efuse —
+and press **Rescan**. It should now read **SUPPORTED**.
+
+Two more buttons help along the way: **Show efuse dump** displays the decoded efuse (read-only), and
+**Save report** writes a plain-text summary.
+
+![Decoded efuse](docs/img/04-efuse-decoded.png)
+
+---
+
+## Deep dive
+
+The mechanism in full, for anyone who wants it.
+
+**From efuse to the driver.** `0xCFDB` isn't kept between power cycles — at each power-on it's loaded
+from the efuse by an autoload record (`40 CF DB XX`, the `XX` landing in the register). The driver
+(`rtump64x64`) then reads `0xCFDB` and builds its own internal byte, `AUXMacType` — **swapping the
+weight of the two bits** as it does:
+
+```
+0xCFDB  RT-clone  (weight 1)  ->  AUXMacType  bit of weight 2
+0xCFDB  AUX-clone (weight 2)  ->  AUXMacType  bit of weight 1   <- the driver tests this one (& 1)
 ```
 
-This is a plain manual MAC override (a standard Windows feature), **not** firmware pass-through — you pick the MAC
-yourself and it does not adapt per host. Fully reversible.
+Pass-through is applied for exactly `AUXMacType & 1`, and that bit is fed **only** by AUX-clone — so
+the numbers differ between the two bytes, but the meaning is the same: *is AUX on?*
 
-## Safety
-- **Do not** use Device Manager "Disable/Enable" or `Disable-NetAdapter` to re-init the card — on some driver versions this triggers a bugcheck (BSOD `WDF_VIOLATION`). **Physically unplug/replug the dock instead.**
-- Everything here is a user-space registry change and is fully reversible.
+| `0xCFDB` | AUX | RT | → `AUXMacType` | `& 1` | pass-through |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| `0x00` | 0 | 0 | 0 | 0 | ✗ |
+| `0x01` | 0 | 1 | 2 | 0 | ✗ |
+| `0x02` | 1 | 0 | 1 | 1 | ✓ |
+| `0x03` | 1 | 1 | 3 | 1 | ✓ |
 
-## Linux
-The Linux `r8152` driver also supports pass-through, but gates it on the chip's eFuse `PASS_THRU`
-bit plus the ACPI method, rather than a Windows-style vendor auto-detect. On hardware whose eFuse
-bit is already set it may work out of the box once the host provides the ACPI MAC. A Linux
-equivalent / notes are **TODO**.
+**It works below the OS, not just inside it.** The AUX switch lives in the chip's own firmware, so
+pass-through isn't tied to any one operating system:
 
-## References
-- Linux kernel `r8152` driver — host MAC pass-through (`drivers/net/usb/r8152.c`, `vendor_mac_passthru_addr_read`).
-- Vendor "MAC Address Pass-Through" firmware feature (Dell / Lenovo / HP documentation).
-- Microsoft `GetSystemFirmwareTable` API — reading the ACPI DSDT.
+- **Pre-boot / PXE** — the host firmware programs the MAC into the card *before any OS loads*. We
+  tested this on a Dell with BIOS *MAC Address Pass-Through* enabled, and it worked.
+- **Windows** — the Realtek driver reads `0xCFDB`, derives `AUXMacType`, and clones the `_AUXMAC_` MAC.
 
-## Disclaimer
-This project only toggles Realtek driver configuration keywords to enable a firmware feature the
-hardware already supports; the MAC itself always comes from your own firmware. Not affiliated with
-or endorsed by Realtek, Dell, Lenovo, HP, or WAVLINK. **Use at your own risk.**
+Because the capability sits in the hardware, network boot already sees the laptop's identity — which
+is what makes this useful for imaging and deployment, not just day-to-day docking.
 
-## License
-MIT — see [LICENSE](LICENSE).
+**How we found it.** We read the chip's registers directly over its USB-OCP interface (reproducible,
+cross-checked against the device revision) and decompiled the driver to see exactly which bit it
+tests.
+
+---
+
+## ⚠️ Safety & disclaimer
+
+- The burn is a **one-time, irreversible (OTP)** write. **Rehearse on a spare first** — a cheap USB
+  dongle uses the same Realtek chip, so it's the ideal practice target before an expensive dock.
+- It only ever writes into confirmed-blank space; **factory data is never touched**, and a failed or
+  interrupted burn leaves the card unharmed.
+- Keep the USB connection stable during the burn.
+- **It worked for us, but you use this entirely at your own risk — no warranty of any kind.** See
+  [LICENSE](LICENSE).
+
+## Under the hood
+
+A thin, layered design — a PowerShell/WinForms window over a small Python backend that talks to the
+Realtek library through `ctypes`:
+
+```
+Card-Inspector.bat     launcher (self-elevates to admin)
+card-inspector.ps1     the window (PowerShell / WinForms)
+tools/                 Python backend:
+  diag.py                read registers (REV, USB_MISC, 0xCFDB)
+  efuse.py               efuse read / dump / dry-run / burn
+  rtldiag.py             unified DLL layer (classifies + drives the Realtek library)
+  efuse_core.py          pure efuse record logic (unit-tested)
+  dll_list.py            lists/classifies the DLLs by command set
+tests/                 regression tests  ->  python -m pytest
+dll/                   you place the Realtek diag DLL here (not shipped)
+```
+
+It reads the `0xCFDB` byte over the chip's USB-OCP interface and, for the burn, drives the efuse
+controller with the library's register primitives — appending the autoload record and verifying it
+by reading it back.
+
+## Command line (optional)
+
+The window is just a front end — the Python backend runs standalone (same Administrator and DLL
+requirements), which is handy for scripting or a headless box:
+
+```powershell
+python -I tools/diag.py  {InterfaceGuid}            # read REV, USB_MISC and 0xCFDB
+python -I tools/efuse.py {InterfaceGuid}            # dump the efuse
+python -I tools/efuse.py {InterfaceGuid} --plan     # dry run: show what a burn would write
+python -I tools/efuse.py {InterfaceGuid} --burn     # burn 0xCFDB = 0x03   (irreversible)
+python -I tools/dll_list.py                         # list / classify the Realtek DLLs found
+```
+
+Get the adapter's GUID with `(Get-NetAdapter).InterfaceGuid`. Add `--dll new|old|auto` to pick a
+specific library, or `--aux-only` to burn `0x02` instead of `0x03`.

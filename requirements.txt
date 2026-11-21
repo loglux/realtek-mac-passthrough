@@ -1,0 +1,9 @@
+# RtlPassthru has NO third-party Python dependencies: it uses only the standard library (ctypes, os, sys).
+# There is nothing to `pip install`.
+#
+# To run you need, on the target machine:
+#   - Windows x64, and a terminal/launcher run as Administrator (chip access needs admin);
+#   - Python 3.8 or newer (a bundled embeddable Python is the plan for the published build, so the user
+#     installs nothing);
+#   - a Realtek diag DLL (RtlDirectDiagLib64.dll), located via the RTLDIAG_DLL_NEW / RTLDIAG_DLL_OLD
+#     environment variables (the vendor DLL is NOT shipped).
