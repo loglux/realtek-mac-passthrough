@@ -122,6 +122,11 @@ The marker sits in the silicon (the `USB_MISC` registers), set when the chip is 
 generic, unbranded Realtek NIC is usually **none** of these — which is exactly why it can work on
 Windows yet be turned away by Linux.
 
+> These variant names aren't ours — they come straight from the Linux driver that gates on them: the
+> `AD_MASK` / `BND_MASK` / `BD_MASK` defines and the `-AD` / `-BND` / `-BD` comments in
+> [`drivers/net/usb/r8152.c`](https://github.com/torvalds/linux/blob/master/drivers/net/usb/r8152.c),
+> added over the years by the kernel patches that taught Linux about each new dock generation.
+
 ---
 
 ## What this means in practice
