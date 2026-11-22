@@ -105,7 +105,7 @@ function Demo-Py($script, $argline) {
           "  0x018-0x0CE  all FF = empty: never written (183 bytes free; FF is the blank state)",
           "  0x0CF        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)",
           "  no 0xCFDB record - the pass-through bits are the chip's own default",
-          "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself","",
+          "  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records","               (USB_MISC_0 = 0x0000, USB_MISC_1 = 0x40: Linux sees a plain chip, Realtek calls it RTL8153UG)","",
           "=== SPI FLASH (first 256 bytes) - driver install disk, not chip settings ===",
           "0x000: 06 02 00 00 00 08 00 00 ff ff ff ff ff ff ff ff  |................|","0x010: $ff","in plain words:",
           "  0x000-0x007  06 02 00 00 00 08 00 00  header of the driver install disk",
@@ -131,7 +131,7 @@ function Demo-Py($script, $argline) {
                   else { @("  0x000-0x017  4 setting record(s), listed above; the chip applies them at power-on",
                            "  0x018-0x50E  all FF = empty: never written (1271 bytes free; FF is the blank state)") })
       $lines += "  0x50F        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)"
-      $lines += "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself"
+      $lines += @("  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records","               (USB_MISC_0 = 0x1000, USB_MISC_1 = 0x00: Linux sees ""-AD"", Realtek calls it RTL8156BG)")
       return ($lines -join "`r`n")
     }
     'efuse.py' {

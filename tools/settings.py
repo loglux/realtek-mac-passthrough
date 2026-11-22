@@ -14,7 +14,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, describe_pg_stamp, parse_autoload_records
+from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, describe_pg_stamp, parse_autoload_records,
+                        variant_name)
+from passthru import chip_variant as linux_variant
 from rtldiag import EfuseUnavailable, RtlDiag
 from storage import flash_name, has_flash
 
@@ -75,7 +77,7 @@ def _records(recs):
         print(f"  => 0xCFDB ends up as 0x{regs[0xCFDB][-1]:02X} (the last record wins)")
 
 
-def _summary(recs, data, start, store, counter_at=None):
+def _summary(recs, data, start, store, counter_at=None, misc=None):
     """Plain-language reading of a dump: what is records, what is empty space, and the write counter (the last
     byte of the efuse area: Realtek's tool burns one bit of it per programming session)."""
     end = recs[-1]["at"] + recs[-1]["size"] if recs else start
@@ -104,7 +106,9 @@ def _summary(recs, data, start, store, counter_at=None):
     if 0xCFDB not in regs:
         print("  no 0xCFDB record - the pass-through bits are the chip's own default")
     if 0xD81A not in regs and 0xD81F not in regs:
-        print("  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself")
+        print("  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records")
+        if misc:
+            print(f"               (USB_MISC_0 = 0x{misc[0]:04X}, USB_MISC_1 = 0x{misc[1]:02X}: {misc[2]})")
 
 
 def main(argv):
@@ -121,6 +125,11 @@ def main(argv):
         flash = c.flash_read(0, FLASH_BYTES) if has_flash(jedec) else None
 
         info = c.chip_info()
+        m0, m1 = c.usb_read(0xD81A, 2), c.usb_read(0xD81F, 1)
+        lin = linux_variant(m0, m1)
+        realtek = variant_name(info["variant"])
+        misc = (m0, m1, (f'Linux sees "-{lin}"' if lin else 'Linux sees a plain chip')
+                + (f', Realtek calls it {realtek}' if realtek else ''))
         kind, size = info["protocol"], info["size"]
         print(f"CHIP {info['name']}")
         efuse, proto = None, ""
@@ -152,7 +161,7 @@ def main(argv):
             print("records:")
             recs = parse_autoload_records(efuse)
             _records(recs)
-            _summary(recs, efuse, 0, "efuse", counter_at=size - 1 if size else None)
+            _summary(recs, efuse, 0, "efuse", counter_at=size - 1 if size else None, misc=misc)
         else:
             print("\nThe settings this chip applies at power-on live in its efuse, which could not be read here.")
         if flash is not None:
