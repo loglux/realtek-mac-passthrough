@@ -127,7 +127,7 @@ def efuse_protocol(ctype: int):
 
 def chip_name(ctype: int) -> str:
     """A family name for display; the exact sub-revision is shown as Realtek's type number."""
-    fam = {0x10: "RTL8152", 0x20: "RTL8152B", 0x30: "RTL8153", 0x31: "RTL8153B", 0x32: "RTL8153C",
+    fam = {0x10: "RTL8152", 0x20: "RTL8152", 0x30: "RTL8153", 0x31: "RTL8153B", 0x32: "RTL8153C",
            0x40: "RTL8156", 0x41: "RTL8156B"}.get(ctype >> 8, "Realtek")
     return f"{fam} (type 0x{ctype:04X})" if ctype else "unknown Realtek chip"
 
