@@ -75,7 +75,7 @@ function Demo-Py($script, $argline) {
         $m0 = if ($script:demoAD) {'0x1000'} else {'0x0000'}; $var = if ($script:demoAD) {'AD'} else {'none'}
         $lin = if ($script:demoAD) {'YES  (RTL8153-AD variant, and 0xCFDB bit0 is set)'} else {'NO   (not a chip variant r8152 recognises (no AD / BND / BD marker))'}
         return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-          "bcdDevice(REV) = 0x31FD","CHIP = RTL8153B (type 0x3102), efuse protocol = old","  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x40",
+          "bcdDevice(REV) = 0x31FD","CHIP = RTL8153BvB (type 0x3102), efuse protocol = type 1","  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x40",
           "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1","  chip variant (r8152) = $var",
           "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)",
           "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)",
@@ -89,7 +89,7 @@ function Demo-Py($script, $argline) {
       $lin = if ($green) {'RTL8153-AD variant, and 0xCFDB bit0 is set'} else {'RTL8153-AD variant, but 0xCFDB bit0 is not set'}
       $pxe = if ($green) {'both clone bits set - 0x03 verified at pre-boot on a Dell'} else {$aux}
       return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-        "bcdDevice(REV) = 0x3104","CHIP = RTL8156B (type 0x4101), efuse protocol = dword","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
+        "bcdDevice(REV) = 0x3104","CHIP = RTL8156BG (type 0x4102), efuse protocol = type 2 (dword)","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
         ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  chip variant (r8152) = AD",
         ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
         "  storage DC00 = 0x00   SPI flash ID = 00 00 00","CONFIG STORAGE = efuse (one-time) - no external memory found; EEPROM not probed") -join "`r`n")
@@ -110,7 +110,7 @@ function Demo-Py($script, $argline) {
             "  no 0xCFDB record - the pass-through bits are the chip's own default",
             "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself")
         }
-        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8153B (type 0x3102)","STORAGE efuse = responding (older protocol)",
+        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8153BvB (type 0x3102)","STORAGE efuse = responding (type 1 protocol)",
           "STORAGE flash = PUYA 2 MB - holds the driver install disk, not chip settings","",
           "=== EFUSE (192 bytes - the whole address space, one-time programmable) ===") + $ef + @("",
           "=== SPI FLASH (first 256 bytes) - driver install disk, not chip settings ===",
@@ -119,7 +119,7 @@ function Demo-Py($script, $argline) {
           "  0x008-...    FF = empty; the disk image itself starts at 0x1000 (not shown)",
           "  the chip does not load settings from this flash (RTL8153 datasheet 6.4: efuse or EEPROM only)") -join "`r`n")
       }
-      $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8156B (type 0x4101)","STORAGE efuse = responding (dword protocol)","STORAGE flash = none","",
+      $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8156BG (type 0x4102)","STORAGE efuse = responding (type 2 (dword) protocol)","STORAGE flash = none","",
         "=== EFUSE (2048 bytes - the whole address space, one-time programmable) ===",
         '0x000: 45 c0 00 00 11 22 33 44 66 41 d8 22 98 b3 42 cf  |E...."3DfA."..B.|')
       # records sit back to back; a burned record is appended right after the last one (the parser stops at the first FF)
@@ -142,7 +142,7 @@ function Demo-Py($script, $argline) {
     }
     'marker.py' {
       if ($script:demoAD) { return "USB_MISC_0 now = 0x1000   0xCFDB now = 0x03`r`nPLAN RESULT = NOT NEEDED (the chip already reports the -AD marker)" }
-      $plan = @("USB_MISC_0 now = 0x0000   0xCFDB now = 0x03","CHIP RTL8153B (type 0x3102), efuse protocol = old","EFUSE = 192 bytes (older protocol), records = 0, non-FF bytes = 0",
+      $plan = @("USB_MISC_0 now = 0x0000   0xCFDB now = 0x03","CHIP RTL8153BvB (type 0x3102), efuse protocol = type 1","EFUSE = 192 bytes (type 1 protocol), records = 0, non-FF bytes = 0",
         "PLAN record = 41 D8 1A 00 10  (USB_MISC_0 = 0x1000, the -AD marker)","PLAN at = 0x00",
         "PLAN byte 0x01 = 0xD8   0xDD00 <- 0x4080B1FF","PLAN byte 0x02 = 0x1A   0xDD00 <- 0x4081FE36",
         "PLAN byte 0x03 = 0x00   0xDD00 <- 0x400101FF","PLAN byte 0x04 = 0x10   0xDD00 <- 0x4082FE24",

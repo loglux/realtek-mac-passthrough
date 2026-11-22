@@ -18,8 +18,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, build_record_bytes, chip_name,  # noqa: E402
-                        efuse8153_encode_write, efuse8153_write_word, efuse_protocol, efuse_v3_write_command,
+from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, build_record_bytes,  # noqa: E402
+                        efuse8153_encode_write, efuse8153_write_word, efuse_v3_write_command,
                         parse_autoload_records)
 from passthru import AD_MASK, AD_VALUE  # noqa: E402
 from rtldiag import EfuseUnavailable, RtlDiag  # noqa: E402
@@ -42,9 +42,12 @@ def plan(c):
     if not cf & 1:
         print("PLAN RESULT = REFUSED (0xCFDB bit0 is not set - on an -AD chip Linux needs it too, so the marker alone would not help)")
         return None
-    ctype = c.chip_type()
-    kind, size = efuse_protocol(ctype)
-    print(f"CHIP {chip_name(ctype)}, efuse protocol = {kind or 'unknown'}")
+    info = c.chip_info()
+    kind, size = info["protocol"], info["size"]
+    print(f"CHIP {info['name']}, efuse protocol = {kind or 'unknown'}")
+    if info["new_chip"]:
+        print("PLAN RESULT = REFUSED (a chip revision outside Realtek's tables - its tool refuses it too)")
+        return None
     if kind not in (EFUSE_OLD, EFUSE_V3):
         why = {None: "the chip type is not known to this tool",
                EFUSE_DWORD: "this chip's efuse uses the dword protocol (RTL8156 family) - the marker writer is for the RTL8153 family"}[kind]

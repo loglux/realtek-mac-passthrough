@@ -14,8 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, chip_name, describe_pg_stamp,
-                        efuse_protocol, parse_autoload_records)
+from efuse_core import EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, describe_pg_stamp, parse_autoload_records
 from rtldiag import EfuseUnavailable, RtlDiag
 from storage import flash_name, has_flash
 
@@ -110,22 +109,22 @@ def main(argv):
         _, jedec = c.flash_id()
         flash = c.flash_read(0, FLASH_BYTES) if has_flash(jedec) else None
 
-        ctype = c.chip_type()
-        kind, size = efuse_protocol(ctype)
-        print(f"CHIP {chip_name(ctype)}")
+        info = c.chip_info()
+        kind, size = info["protocol"], info["size"]
+        print(f"CHIP {info['name']}")
         efuse, proto = None, ""
         c.pg_enter()
         try:
             if kind == EFUSE_DWORD:
                 c.efuse_enable()
                 try:
-                    efuse, proto = c.efuse_dump(EFUSE_BYTES), "dword protocol"
+                    efuse, proto = c.efuse_dump(EFUSE_BYTES), EFUSE_DWORD + " protocol"
                 finally:
                     c.efuse_disable()
             elif kind == EFUSE_V3:
-                efuse, proto = c.efuse_v3_dump(size), "V3 protocol"
+                efuse, proto = c.efuse_v3_dump(size), EFUSE_V3 + " protocol"
             elif kind == EFUSE_OLD:
-                efuse, proto = c.efuse8153_dump(size), "older protocol"
+                efuse, proto = c.efuse8153_dump(size), EFUSE_OLD + " protocol"
         except EfuseUnavailable:
             efuse = None
         finally:

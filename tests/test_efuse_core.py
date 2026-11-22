@@ -130,22 +130,46 @@ UGREEN_EFUSE = bytes.fromhex(   # real efuse of a plain RTL8153B (type 0x3106), 
     "08 23 e8 18 18 02 05 04") + b"\xff" * (0xD0 - 0x19) + b"\xfe"
 
 
-def test_chip_type_real_cards():
-    # UGREEN: 0xE612 = 0x6310, 0xCD14 = 0x12 -> 0x3106 (Realtek's tool: "RTL8153BvC"), V3 protocol, 208 bytes
-    assert ec.chip_type(0x6310, 0x12) == 0x3106
+def test_chip_identification_real_cards():
+    # UGREEN: 0xE612 = 0x6310, 0xCD14 = 0x12, USB_MISC_0 = 0, 0xD81E = 0x4000 -> type 0x3106, variant 0x220
+    # = "RTL8153UG" in Realtek's tool 2.0.30 (2.0.19 did not know 0x4000 and called it a new chip)
+    assert ec.chip_type(0x6310, cd14=0x12) == (0x3106, False)
+    assert ec.chip_variant(0x3106, 0x0000, 0x4000) == (0x220, False)
+    assert ec.chip_name(0x3106, 0x220) == "RTL8153UG (type 0x3106)"
     assert ec.efuse_protocol(0x3106) == (ec.EFUSE_V3, 0xD0)
-    # WAVLINK: 0xE612 & 0x7CF0 = 0x7410 -> RTL8156B family, dword protocol
-    assert ec.efuse_protocol(ec.chip_type(0x7410, 0)) == (ec.EFUSE_DWORD, 0x510)
+    # WAVLINK: 0xE612 = 0x7410, USB_MISC_0 = 0x1000 -> type 0x4102, variant 0x502 = "RTL8156BG" (both tools agree)
+    assert ec.chip_type(0x7410) == (0x4102, False)
+    assert ec.chip_variant(0x4102, 0x1000, 0x0000) == (0x502, False)
+    assert ec.variant_name(0x502) == "RTL8156BG"
+    assert ec.efuse_protocol(0x4102) == (ec.EFUSE_DWORD, 0x510)
 
 
-def test_chip_type_8153b_subrevisions():
-    assert ec.chip_type(0x6000, 0) == 0x3101
-    assert [ec.chip_type(0x6010, x) for x in (0x00, 0x01, 0x11, 0x02, 0x12)] == [0x3102, 0x3103, 0x3104, 0x3105, 0x3106]
-    assert ec.chip_type(0x6010, 0x03) == 0 and ec.chip_type(0x6020, 0) == 0     # unknown -> 0 (refuse)
-    assert [ec.chip_type(0x6400, x) for x in (0x00, 0x01, 0x11, 0x02, 0x12)] == [0x3201, 0x3202, 0x3203, 0x3204, 0x3205]
+def test_chip_type_revisions():
+    t = lambda e612, cd14=0, **kw: ec.chip_type(e612, cd14=cd14, **kw)[0]   # noqa: E731
+    assert t(0x6000) == 0x3101
+    assert [t(0x6010, x) for x in (0x00, 0x01, 0x11, 0x02, 0x12)] == [0x3102, 0x3103, 0x3104, 0x3105, 0x3106]
+    assert ec.chip_type(0x6010, cd14=0x03) == (0x3106, True)          # outside the table: flagged, like Realtek
+    assert ec.chip_type(0x6020)[1] is True
+    assert [t(0x6400, x) for x in (0x00, 0x01, 0x11, 0x02, 0x12)] == [0x3201, 0x3202, 0x3203, 0x3204, 0x3205]
+    assert [t(0x5C00), t(0x5C10), t(0x5C20), t(0x5C30), t(0x5C30, 1)] == [0x3001, 0x3002, 0x3003, 0x3004, 0x3005]
+    assert [t(0x7020), t(0x7030), t(0x7030, dc48=6)] == [0x4001, 0x4002, 0x4003]
+    assert [t(0x7400), t(0x7410), t(0x7420)] == [0x4101, 0x4102, 0x4103]
+    assert [t(0x1020), t(0x1030), t(0x2010), t(0x2020)] == [0x5001, 0x5002, 0x6001, 0x6002]   # RTL8157 / RTL8159
+    assert [t(0x4800), t(0x4C00), t(0x4C10)] == [0x1001, 0x2001, 0x2002]
+    assert ec.chip_type(0x0800) == (0, True)
     assert ec.efuse_protocol(0x3102)[0] == ec.EFUSE_OLD and ec.efuse_protocol(0x3104)[0] == ec.EFUSE_DWORD
-    assert ec.efuse_protocol(0) == (None, 0)
+    assert ec.efuse_protocol(0x5001)[0] == ec.EFUSE_DWORD and ec.efuse_protocol(0) == (None, 0)
 
+
+def test_chip_variants():
+    assert ec.chip_variant(0x3102, 0x1000, 0) == (0x207, False) and ec.variant_name(0x207) == "RTL8158vA"
+    assert ec.chip_variant(0x3102, 0, 0x0400) == (0x206, False) and ec.variant_name(0x206) == "RTL8153BND"
+    assert ec.chip_variant(0x3004, 0x1000, 0) == (0x10A, False) and ec.variant_name(0x10A) == "RTL8153ADvB"
+    assert ec.chip_variant(0x3106, 0, 0) == (0x216, False) and ec.variant_name(0x216) == "RTL8153E"
+    assert ec.chip_variant(0x3106, 0, 0x2000) == (0x216, True)            # unknown USB_MISC_1 -> new chip
+    assert ec.chip_variant(0x4102, 0x1000, 0x0200) == (0x508, False) and ec.variant_name(0x508) == "RTL8156BGH"
+    assert ec.chip_variant(0x5001, 0, 0) == (0xA01, False) and ec.variant_name(0xA01) == "RTL8157"
+    assert ec.chip_name(0x3106, 0x216, True) == "RTL8153E (type 0x3106, a revision not in Realtek's tables)"
 
 def test_v3_write_command():
     # the AD marker 41 D8 1A 00 10 at 0x18 on a blank V3 area: byte 0x19 = D8 -> odd -> D8 << 8 | 0xFF
