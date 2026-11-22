@@ -57,7 +57,6 @@ for pass-through:
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Hex value | `0x80` | `0x40` | `0x20` | `0x10` | `0x08` | `0x04` | **`0x02`** | **`0x01`** |
 | Windows driver | — | — | — | — | — | — | AUX MAC clone | RT MAC clone |
-| Realtek | — | — | — | — | — | — | `SELF_POWER` | `DOCKING` |
 | Linux driver | — | — | — | — | — | — | — | `PASS_THRU` |
 | **Required value** | — | — | — | — | — | — | **1** | **1** |
 
@@ -66,8 +65,24 @@ then any setting records in its efuse on top. The `USB_MISC` registers are set a
 
 Where the names come from — the chip itself holds only the numbers: **Windows driver** — its log
 messages *"Is AUX / RT MAC clone support system"* (`rtump64x64.sys`, `NIC_QuerySpecificHwCaps`);
-**Realtek** — its configuration fields; **Linux driver** — the defines and comments in
-`drivers/net/usb/r8152.c`, which also name the variants "RTL8153-AD", "-BND" and "-BD".
+**Linux driver** — the defines and comments in `drivers/net/usb/r8152.c`, which also name the
+variants "RTL8153-AD", "-BND" and "-BD".
+
+### Realtek's names for these bits
+
+Realtek's own configuration tool names the bits of `0xCFDB` differently per chip generation — the
+same names, in different places:
+
+| Chip generation | Bit 2 | Bit 1 | Bit 0 |
+|---|---|---|---|
+| Earliest chips (first RTL8152 / RTL8153) | `MAC_CLONE` | `SELF_POWER` | `DOCKING` |
+| Some RTL8153 variants | `DOCKING` | `SELF_POWER` | `MAC_CLONE` |
+| **RTL8156, and other RTL8153 variants** | `DOCKING` | **`AUX_MAC_CLONE`** | **`MAC_CLONE`** |
+
+On an RTL8156 the two bits pass-through needs are Realtek's `AUX_MAC_CLONE` (bit 1) and `MAC_CLONE`
+(bit 0) — the same pair the Windows driver calls AUX and RT MAC clone. Taken from the tool's code
+and checked against it on a real RTL8156: for `0xCFDB = 0x03` it reports `MAC_CLONE = 01`,
+`DOCKING = 00`.
 
 **What RtlPassthru does:** it reads these registers and shows, per system, whether pass-through will
 work. If bit 1 of `0xCFDB` is missing, it burns `0xCFDB = 0x03` (both bits) into the chip's efuse. It
