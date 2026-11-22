@@ -9,7 +9,7 @@ Always 0x03, like a chip that ships enabled: Windows needs the AUX bit (bit1), L
 needs bit0, and pre-boot was verified with 0x03 only. (The old --aux-only / 0x02 option was removed.)
 
 The burn appends a 4-byte record to the trailing 0xFF run (end of autoload); factory data is untouched.
-Only ever writes into confirmed-free (0xFFFFFFFF) space. The output format is stable - the GUI parses it.
+Only ever writes into confirmed-free (0xFFFFFFFF) space. With --json the last line is JSON {...} - what the GUI reads.
 """
 import os
 import sys
@@ -17,6 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
 from efuse_core import build_record, find_append_point, parse_autoload_records, record_dword
+from jsonout import emit, wanted
 from rtldiag import EfuseUnavailable, RtlDiag
 
 REG = 0xCFDB
@@ -61,7 +62,7 @@ def _plan(c, value):
 
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
-        print("usage: efuse.py {GUID} [N] [--plan|--burn] [--dll new|old|auto]")
+        print("usage: efuse.py {GUID} [N] [--plan|--burn] [--dll new|old|auto] [--json]")
         return 2
     if "--aux-only" in argv:
         print("ERROR: --aux-only was removed. 0x02 turns Linux pass-through off on -AD chips and was never "
@@ -72,6 +73,7 @@ def main(argv):
     value = 0x03
     do_burn = "--burn" in argv
     do_plan = do_burn or "--plan" in argv
+    json_out = wanted(argv)
     nbytes = 128
     for a in argv[1:]:
         if a.isdigit():
@@ -79,6 +81,7 @@ def main(argv):
         elif a.lower().startswith("0x"):
             nbytes = int(a, 16)
 
+    res: dict = {"tool": "efuse", "mode": "burn" if do_burn else ("plan" if do_plan else "dump"), "result": ""}
     c = RtlDiag(guid, dll).open()
     try:
         print(f"GUID {guid}  (DLL: {c.family} v{c.version}, {c.exports} procedures)")
@@ -89,17 +92,23 @@ def main(argv):
                 _dump(c, nbytes)
                 return 0
             ap, dw, dwdata = _plan(c, value)
+            res["plan"] = {"at": ap["append"], "dwaddr": dw, "current": ap["cur"], "dword": dwdata,
+                           "record": build_record(REG, value).hex(" ").upper(), "free": ap["free"],
+                           "gap": ap["last_significant"] + 1 != ap["append"]}
             if not ap["free"]:
                 print("!! append point is NOT free (not 0xFFFFFFFF) - BURN ABORTED for safety.")
+                res["result"] = "not_free"
                 return 1
-            if ap["last_significant"] + 1 != ap["append"]:
+            if res["plan"]["gap"]:
                 # the records end mid-dword: a dword-aligned record would sit behind FF bytes, and FF ends the
                 # records - the chip would never load it
                 print(f"!! the records end at 0x{ap['last_significant'] + 1:X}, not on a dword boundary - a record at "
                       f"0x{ap['append']:X} would sit behind FF and never load. BURN ABORTED for safety.")
+                res["result"] = "gap"
                 return 1
             if not do_burn:
                 print("=== DRY RUN: nothing written. Add --burn to write. ===")
+                res["result"] = "ready"
                 return 0
             print("=== BURN (irreversible) ===")
             st = c.efuse_write_dword(dw, dwdata)
@@ -108,13 +117,18 @@ def main(argv):
             print(f"read-back @0x{ap['append']:X} = 0x{back:08X}")
             ok = back == dwdata
             print("RESULT: " + ("OK, matches" if ok else f"MISMATCH: 0x{back:08X} != 0x{dwdata:08X}"))
+            res["read_back"] = back
+            res["result"] = "ok" if ok else "mismatch"
             return 0 if ok else 1
         except EfuseUnavailable as e:
             print(f"EFUSE UNAVAILABLE: {e}")
+            res["result"] = "unavailable"; res["message"] = str(e)
             return 3
         finally:
             c.efuse_disable()
             c.pg_leave()
+            if json_out and do_plan:
+                emit(res)
     finally:
         c.close()
 

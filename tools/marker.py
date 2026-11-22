@@ -16,7 +16,7 @@ Safe order: everything after the header byte is burned first while the header is
 0xFF header means "no more records", so it is invisible. Each write is read back; only if all are right is the
 header burned, last. A mismatch before that leaves the card behaving exactly as before.
 A chip revision outside Realtek's tables is refused, as Realtek's tool refuses it.
-The output format is stable - the GUI parses the 'PLAN / BURN ...' lines and shows 'STEP = ...' as progress.
+With --json the last line is JSON {...} (what the GUI reads); 'STEP = ...' lines drive its progress bar.
 """
 import os
 import sys
@@ -27,10 +27,26 @@ from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, build_record_bytes,  #
                         efuse8153_encode_write, efuse8153_write_word, efuse_v3_write_command,
                         parse_autoload_records, record_dword_writes)
 from passthru import AD_MASK, AD_VALUE  # noqa: E402
+from jsonout import emit, wanted  # noqa: E402
 from rtldiag import EfuseUnavailable, RtlDiag  # noqa: E402
 
 REG, VALUE = 0xD81A, 0x1000          # USB_MISC_0 = 0x1000: r8152 sees an RTL8153-AD
 PROVEN = {EFUSE_DWORD: True, EFUSE_OLD: False, EFUSE_V3: False}   # burned and verified on a real card?
+
+
+OUT: dict = {"tool": "marker", "plan": {}, "burn": {}}   # what --json emits at the end
+
+
+def plan_result(code, reason=""):
+    """Print the PLAN RESULT line and remember it for --json. code: OK / NOT_NEEDED / REFUSED / BLOCKED."""
+    OUT["plan"].update(result=code, reason=reason)
+    print(f"PLAN RESULT = {code.replace('_', ' ')}" + (f" ({reason})" if reason else ""))
+
+
+def burn_result(code, reason=""):
+    """Print the BURN RESULT line and remember it for --json. code: OK / STOPPED."""
+    OUT["burn"].update(result=code, reason=reason)
+    print(f"BURN RESULT = {code}" + (f" ({reason})" if reason else ""))
 
 
 def step(text):
@@ -55,21 +71,22 @@ def plan(c):
     cf = c.usb_read(0xCFDB, 1)
     print(f"USB_MISC_0 now = 0x{m0:04X}   0xCFDB now = 0x{cf:02X}")
     if (m0 & AD_MASK) == AD_VALUE:
-        print("PLAN RESULT = NOT NEEDED (the chip already reports the -AD marker)")
+        plan_result("NOT_NEEDED", "the chip already reports the -AD marker")
         return None
     if not cf & 1:
-        print("PLAN RESULT = REFUSED (0xCFDB bit0 is not set - on an -AD chip Linux needs it too, so the marker alone would not help)")
+        plan_result("REFUSED", "0xCFDB bit0 is not set - on an -AD chip Linux needs it too, so the marker alone would not help")
         return None
     info = c.chip_info()
     kind, size = info["protocol"], info["size"]
     print(f"CHIP {info['name']}, efuse protocol = {kind or 'unknown'}")
+    OUT["chip"] = {k: info[k] for k in ("name", "type", "variant", "protocol", "new_chip")}
     if kind is None or info["new_chip"]:
-        print("PLAN RESULT = REFUSED (a chip revision outside Realtek's tables - its own tool refuses it too)")
+        plan_result("REFUSED", "a chip revision outside Realtek's tables - its own tool refuses it too")
         return None
     try:
         area = _read_area(c, kind, size)
     except EfuseUnavailable as e:
-        print(f"PLAN RESULT = REFUSED (the efuse could not be read: {e})")
+        plan_result("REFUSED", f"the efuse could not be read: {e}")
         return None
     recs = parse_autoload_records(area)
     at = recs[-1]["at"] + recs[-1]["size"] if recs else 0
@@ -78,17 +95,18 @@ def plan(c):
     if not recs:
         print("PLAN NOTE = no records at all - compare the settings dump with Realtek's own tool before burning")
     if any(r["kind"] == "reg" and r["reg"] == REG for r in recs):
-        print("PLAN RESULT = BLOCKED (the efuse already holds a USB_MISC_0 record)")
+        plan_result("BLOCKED", "the efuse already holds a USB_MISC_0 record")
         return None
     if recs and recs[-1]["kind"] == "unknown":
-        print("PLAN RESULT = BLOCKED (the records end in a type this tool cannot size - cannot tell where they stop)")
+        plan_result("BLOCKED", "the records end in a type this tool cannot size - cannot tell where they stop")
         return None
     end = at + len(rec)                        # this byte must stay FF: it ends the records after ours
     if end >= size - 1 or any(b != 0xFF for b in area[at:end + 1]):
-        print(f"PLAN RESULT = BLOCKED (no blank room at 0x{at:02X} for {len(rec)} bytes + end marker before the write counter)")
+        plan_result("BLOCKED", f"no blank room at 0x{at:02X} for {len(rec)} bytes + end marker before the write counter")
         return None
     print(f"PLAN record = {rec.hex(' ').upper()}  (USB_MISC_0 = 0x{VALUE:04X}, the -AD marker)")
     print(f"PLAN at = 0x{at:02X}")
+    OUT["plan"].update(record=rec.hex(" ").upper(), at=at, protocol=kind, proven=PROVEN[kind])
     p = {"kind": kind, "at": at, "rec": rec}
     if kind == EFUSE_DWORD:
         p["dwords"] = record_dword_writes(area, at, rec)
@@ -109,16 +127,16 @@ def plan(c):
                   "efuse on; 0xDD00 bit27, wait; command, wait bit30; bit28, wait; efuse off; read back")
     print(f"PLAN PROTOCOL = {kind} - " + ("proven on hardware" if PROVEN[kind] else
                                           "written from Realtek's tool, not yet proven on hardware"))
-    print("PLAN RESULT = OK")
+    plan_result("OK")
     return p
 
 
 def _stop(header):
     if header:
-        print("BURN RESULT = STOPPED (the header did not verify - check the settings dump)")
+        burn_result("STOPPED", "the header did not verify - check the settings dump")
     else:
-        print("BURN RESULT = STOPPED (a data byte did not verify; the header is still FF, so the record is not "
-              "active and the card behaves as before)")
+        burn_result("STOPPED", "a data byte did not verify; the header is still FF, so the record is not "
+                               "active and the card behaves as before")
     return 1
 
 
@@ -157,17 +175,18 @@ def burn(c):
         finally:
             if saved is not None:
                 c.v3_session_end(saved)
-    print(f"BURN RESULT = OK (record burned and verified at 0x{at:02X}; unplug and re-plug the card to load it)")
+    burn_result("OK", f"record burned and verified at 0x{at:02X}; unplug and re-plug the card to load it")
     return 0
 
 
 def main(argv):
     modes = [m for m in ("--plan", "--burn") if m in argv]
     if not argv or argv[0] in ("-h", "--help") or len(modes) != 1:
-        print("usage: marker.py {GUID} --plan | --burn  [--dll new|old|auto]")
+        print("usage: marker.py {GUID} --plan | --burn  [--dll new|old|auto] [--json]")
         return 2
     guid = argv[0]
     dll = argv[argv.index("--dll") + 1] if "--dll" in argv else "auto"
+    OUT["mode"] = modes[0].lstrip("-")
     c = RtlDiag(guid, dll).open()
     try:
         print(f"GUID {guid}  (DLL: {c.family} v{c.version}, {c.exports} procedures)")
@@ -181,6 +200,8 @@ def main(argv):
             return burn(c)
         finally:
             c.pg_leave()
+            if wanted(argv):
+                emit(OUT)
     finally:
         c.close()
 
