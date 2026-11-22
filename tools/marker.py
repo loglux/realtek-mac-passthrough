@@ -19,7 +19,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
 from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, build_record_bytes, chip_name,  # noqa: E402
-                        efuse8153_encode_write, efuse8153_write_word, efuse_protocol, parse_autoload_records)
+                        efuse8153_encode_write, efuse8153_write_word, efuse_protocol, efuse_v3_write_command,
+                        parse_autoload_records)
 from passthru import AD_MASK, AD_VALUE  # noqa: E402
 from rtldiag import EfuseUnavailable, RtlDiag  # noqa: E402
 
@@ -44,21 +45,20 @@ def plan(c):
     ctype = c.chip_type()
     kind, size = efuse_protocol(ctype)
     print(f"CHIP {chip_name(ctype)}, efuse protocol = {kind or 'unknown'}")
-    if kind != EFUSE_OLD:
+    if kind not in (EFUSE_OLD, EFUSE_V3):
         why = {None: "the chip type is not known to this tool",
-               EFUSE_DWORD: "this chip's efuse uses the dword protocol (RTL8156 family) - the marker writer is for the RTL8153 family",
-               EFUSE_V3: "this chip's efuse uses the V3 protocol - writing with it is not implemented yet"}[kind]
+               EFUSE_DWORD: "this chip's efuse uses the dword protocol (RTL8156 family) - the marker writer is for the RTL8153 family"}[kind]
         print(f"PLAN RESULT = REFUSED ({why})")
         return None
     try:
-        area = c.efuse8153_dump(size)
+        area = c.efuse8153_dump(size) if kind == EFUSE_OLD else c.efuse_v3_dump(size)
     except EfuseUnavailable as e:
         print(f"PLAN RESULT = REFUSED (the efuse could not be read: {e})")
         return None
     recs = parse_autoload_records(area)
     at = recs[-1]["at"] + recs[-1]["size"] if recs else 0
     rec = build_record_bytes(REG, VALUE.to_bytes(2, "little"))
-    print(f"EFUSE = {size} bytes (older protocol), records = {len(recs)}, "
+    print(f"EFUSE = {size} bytes ({kind} protocol), records = {len(recs)}, "
           f"non-FF bytes = {sum(b != 0xFF for b in area)}")
     if at == 0 and sum(b != 0xFF for b in area) == 0:
         print("PLAN NOTE = the efuse reads completely blank - check the settings dump against Realtek's own tool first")
@@ -74,8 +74,15 @@ def plan(c):
     for i in order:
         a = at + i
         w = efuse8153_write_word(a, 0xFF, rec[i])
-        print(f"PLAN byte 0x{a:02X} = 0x{rec[i]:02X}   0xDD00 <- 0x{efuse8153_encode_write(a >> 1, w):08X}"
+        cmd = efuse8153_encode_write(a >> 1, w) if kind == EFUSE_OLD else efuse_v3_write_command(a, w)
+        print(f"PLAN byte 0x{a:02X} = 0x{rec[i]:02X}   0xDD00 <- 0x{cmd:08X}"
               + ("   (header, burned last - activates the record)" if i == 0 else ""))
+    if kind == EFUSE_V3:
+        print("PLAN V3 sequence per byte (Realtek's tool 2.0.30): 0xE85B |= 0x10 and USB 0xD380 |= 0x0C for the session; "
+              "0xE85B |= 0xC4; 0xDD00 |= bit27, wait clear; 0xDD00 <- command above, wait bit30 clear; "
+              "0xDD00 |= bit28, wait clear; 0xE85B &= 0x3B; read the byte back")
+        print("PLAN RESULT = PLAN-ONLY (this chip uses the V3 protocol - the plan is shown, burning with it is not enabled yet)")
+        return None
     print("PLAN RESULT = OK")
     return at, rec, order
 

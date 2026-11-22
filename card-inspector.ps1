@@ -570,6 +570,8 @@ function Preview {
         $script:previewOk = $true; $script:adAt = $at
         Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record $rec  at efuse offset $at" + $dot + 'blank space' + $dot + 'data first, header last')
         Set-Btn $btnA2 '2   Burn -AD marker' 'danger' $true
+      } elseif ($res -eq 'PLAN-ONLY') {
+        Set-Result 'info' 'Plan only  -  nothing written' ("Record $rec  at efuse offset $at" + $dot + 'this chip uses the V3 protocol' + $dot + 'burning with it is not enabled yet')
       } elseif ($res -eq 'NOT') {
         Set-Result 'warn' 'The chip already reports the -AD marker' 'Nothing to burn. Press Rescan if the tiles have not caught up.'
       } else {

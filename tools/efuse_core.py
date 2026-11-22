@@ -186,6 +186,12 @@ def efuse8153_write_word(addr: int, old_byte: int, new_byte: int) -> int:
     return (b << 8 | 0x00FF) if addr & 1 else (b | 0xFF00)
 
 
+def efuse_v3_write_command(addr: int, word: int) -> int:
+    """V3 protocol (late RTL8153B/C): the 0xDD00 dword that programs `word` (from efuse8153_write_word) at byte
+    `addr` - bit30 = write, the even byte address in bits 23..16, no bit rotation (Realtek's tool 2.0.19/2.0.30)."""
+    return (0x40000000 | ((addr & 0x1FE) << 15) | (word & 0xFFFF)) & 0xFFFFFFFF
+
+
 FLASH_RECORDS_START = 0x008   # SPI flash: an 8-byte header, then autoload records until the first 0xFF
 
 

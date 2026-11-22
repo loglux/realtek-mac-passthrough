@@ -147,6 +147,14 @@ def test_chip_type_8153b_subrevisions():
     assert ec.efuse_protocol(0) == (None, 0)
 
 
+def test_v3_write_command():
+    # the AD marker 41 D8 1A 00 10 at 0x18 on a blank V3 area: byte 0x19 = D8 -> odd -> D8 << 8 | 0xFF
+    assert ec.efuse_v3_write_command(0x19, ec.efuse8153_write_word(0x19, 0xFF, 0xD8)) == 0x400CD8FF
+    assert ec.efuse_v3_write_command(0x18, ec.efuse8153_write_word(0x18, 0xFF, 0x41)) == 0x400CFF41
+    # the read command for the same byte differs only in the top bits (bit31 = read, bit30 = write)
+    assert ec.efuse_v3_write_command(0x18, 0) & 0x00FF0000 == (0x80000000 | (0x18 << 15)) & 0x00FF0000
+
+
 def test_ugreen_records_and_stamp():
     recs = ec.parse_autoload_records(UGREEN_EFUSE)
     assert [(r["at"], r["reg"]) for r in recs] == [(0x00, 0xCC24), (0x04, 0xC000), (0x0D, 0xE822), (0x11, 0xE818)]
