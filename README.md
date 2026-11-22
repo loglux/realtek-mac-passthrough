@@ -22,6 +22,9 @@ The good news is that RtlPassthru can burn it in.
 
 > Screenshots use sample data (a made-up MAC). Nothing personal is shown.
 
+> **Only need it in Windows, and would rather not change the card?** [Registry Fix](registry-fix/README.md)
+> turns pass-through on with a Realtek driver setting — fully reversible, no Python, no Realtek DLL.
+
 ---
 
 ## How it works
