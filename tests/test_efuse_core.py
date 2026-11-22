@@ -91,6 +91,15 @@ def test_flash_append_point():
     assert ec.flash_append_point(header + bytes.fromhex("41d81a0010") + b"\xff" * 8) == 0x00D
 
 
+def test_pg_stamp():
+    # WAVLINK RTL8156BG: Realtek's tool reported "Nic PG version = 2.19", "Nic CFG version = 1028" for 13 02 04 04.
+    assert ec.describe_pg_stamp(bytes.fromhex("13020404")) == "PG tool 2.19, CFG 1028"
+    # The burned RTL8156 dongle (ETH6_EFUSE above) carries 0F 02 01 04.
+    stamp = next(r for r in ec.parse_autoload_records(ETH6_EFUSE) if r["reg"] == ec.PG_STAMP_REG)
+    assert ec.describe_pg_stamp(stamp["data"]) == "PG tool 2.15, CFG 1025"
+    assert ec.describe_pg_stamp(b"\x01") == ""
+
+
 def test_parse_records_unknown_type_stops():
     recs = ec.parse_autoload_records(bytes([0x40, 0xCF, 0xDB, 0x03, 0xC5, 0x11, 0x22, 0xFF]))
     assert recs[0]["reg"] == 0xCFDB and recs[-1]["kind"] == "unknown" and recs[-1]["at"] == 4

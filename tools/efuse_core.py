@@ -69,6 +69,20 @@ def find_append_point(data: bytes) -> dict:
     }
 
 
+PG_STAMP_REG = 0xD3A0   # Realtek's programming tool leaves its own version and its CFG version here
+
+
+def describe_pg_stamp(data: bytes) -> str:
+    """'PG tool 2.19, CFG 1028' from a 4-byte 0xD3A0 record (13 02 04 04), or '' if it does not fit.
+
+    Matched against Realtek's own tool on a real RTL8156BG: its log said "Nic PG version = 2.19" and
+    "Nic CFG version = 1028" for an efuse whose 0xD3A0 record is 13 02 04 04.
+    """
+    if len(data) != 4:
+        return ""
+    return f"PG tool {data[1]}.{data[0]:02d}, CFG {int.from_bytes(data[2:4], 'little')}"
+
+
 FLASH_RECORDS_START = 0x008   # SPI flash: an 8-byte header, then autoload records until the first 0xFF
 
 

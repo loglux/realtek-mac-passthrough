@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import parse_autoload_records
+from efuse_core import PG_STAMP_REG, describe_pg_stamp, parse_autoload_records
 from rtldiag import EfuseUnavailable, RtlDiag
 from storage import flash_name, has_flash
 
@@ -40,6 +40,8 @@ def _records(recs):
         dhex = " ".join(f"{b:02X}" for b in r["data"])
         if r["kind"] == "reg":
             nm = NAMES.get(r["reg"], "")
+            if r["reg"] == PG_STAMP_REG and describe_pg_stamp(r["data"]):
+                nm = "programmed with " + describe_pg_stamp(r["data"])
             print(f"  0x{r['at']:03X}: write [{dhex}] -> reg 0x{r['reg']:04X}" + (f"  ({nm})" if nm else ""))
         elif r["kind"] == "raw":
             print(f"  0x{r['at']:03X}: other command [{dhex}]  (fixed-size, not decoded)")
