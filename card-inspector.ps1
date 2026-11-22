@@ -75,7 +75,7 @@ function Demo-Py($script, $argline) {
         $m0 = if ($script:demoAD) {'0x1000'} else {'0x0000'}; $var = if ($script:demoAD) {'AD'} else {'none'}
         $lin = if ($script:demoAD) {'YES  (RTL8153-AD variant, and 0xCFDB bit0 is set)'} else {'NO   (not a chip variant r8152 recognises (no AD / BND / BD marker))'}
         return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-          "bcdDevice(REV) = 0x31FD","  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x40",
+          "bcdDevice(REV) = 0x31FD","CHIP = RTL8153B (type 0x3102), efuse protocol = old","  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x40",
           "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1","  chip variant (r8152) = $var",
           "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)",
           "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)",
@@ -89,7 +89,7 @@ function Demo-Py($script, $argline) {
       $lin = if ($green) {'RTL8153-AD variant, and 0xCFDB bit0 is set'} else {'RTL8153-AD variant, but 0xCFDB bit0 is not set'}
       $pxe = if ($green) {'both clone bits set - 0x03 verified at pre-boot on a Dell'} else {$aux}
       return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-        "bcdDevice(REV) = 0x3104","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
+        "bcdDevice(REV) = 0x3104","CHIP = RTL8156B (type 0x4101), efuse protocol = dword","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
         ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  chip variant (r8152) = AD",
         ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
         "  storage DC00 = 0x00   SPI flash ID = 00 00 00","CONFIG STORAGE = efuse (one-time) - no external memory found; EEPROM not probed") -join "`r`n")
@@ -207,6 +207,7 @@ function Parse-Diag($dr) {
   $d.Ok = $true; $d.CfdbHex = $cfhex; $d.Cf = [Convert]::ToInt32($cfhex,16)
   $d.Bit0 = $d.Cf -band 1; $d.Bit1 = ($d.Cf -shr 1) -band 1
   $d.Rev = Rx $dr 'bcdDevice\(REV\)\s*=\s*(0x[0-9A-Fa-f]+)'
+  $d.Chip = Rx $dr '(?m)^CHIP = (.+?), efuse protocol'; $d.Proto = Rx $dr 'efuse protocol = (\S+)'
   $d.M0  = Rx $dr '0xD81A\s+USB_MISC_0\s*=\s*(0x[0-9A-Fa-f]+)'
   $d.M1  = Rx $dr '0xD81F\s+USB_MISC_1\s*=\s*(0x[0-9A-Fa-f]+)'
   $d.Variant = Rx $dr 'chip variant \(r8152\)\s*=\s*(\S+)'
@@ -645,8 +646,8 @@ function Fill-Details {
   $rtb = $detRtb; $rtb.Clear(); $detDump.Text = ''
   if (-not $d -or -not $d.Ok) { $detDump.Text = '(read a card first)'; return }
   Add-Txt $rtb "DEVICE`r`n" $C_ACCENT $true $FS_L
-  Add-Txt $rtb ("  {0}`r`n  Windows name : {1}`r`n  MAC address  : {2}`r`n  Chip         : {3}, rev {4}`r`n  Settings in  : {5}`r`n  Diag DLL     : {6}`r`n`r`n" -f `
-    $d.Card.Desc, $d.Card.Name, $d.Card.Mac, (Chip-Name $d.Card.Pid), $d.Rev, $d.Storage, $d.Dll) $C_TEXT $false $FS_M $true
+  Add-Txt $rtb ("  {0}`r`n  Windows name : {1}`r`n  MAC address  : {2}`r`n  Chip         : {3}, rev {4}`r`n  Efuse        : {7} protocol`r`n  Settings in  : {5}`r`n  Diag DLL     : {6}`r`n`r`n" -f `
+    $d.Card.Desc, $d.Card.Name, $d.Card.Mac, $(if ($d.Chip) { $d.Chip } else { Chip-Name $d.Card.Pid }), $d.Rev, $d.Storage, $d.Dll, $(if ($d.Proto) { $d.Proto } else { 'unknown' })) $C_TEXT $false $FS_M $true
   Add-Txt $rtb "PASS-THROUGH BY SYSTEM  -  each one checks a different marker`r`n" $C_ACCENT $true $FS_L
   foreach ($k in @('Windows','PXE','Linux')) {
     if (-not $d.Layers.Contains($k)) { continue }
@@ -698,7 +699,7 @@ Generated : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 DEVICE     : $($d.Card.Desc)
 Windows    : $($d.Card.Name)
 MAC        : $($d.Card.Mac)
-Chip       : $(Chip-Name $d.Card.Pid), rev $($d.Rev)
+Chip       : $(if ($d.Chip) { $d.Chip } else { Chip-Name $d.Card.Pid }), rev $($d.Rev), efuse protocol $($d.Proto)
 Settings in: $($d.Storage)
 
 PASS-THROUGH BY SYSTEM

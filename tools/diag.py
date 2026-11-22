@@ -10,6 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
+from efuse_core import chip_name, efuse_protocol
 from rtldiag import RtlDiag
 from passthru import format_lines, verdict
 from storage import describe as describe_storage
@@ -28,9 +29,11 @@ def main(argv):
         m0 = c.usb_read(0xD81A, 2)
         m1 = c.usb_read(0xD81F, 1)
         cfdb = c.usb_read(0xCFDB, 1)
+        ctype = c.chip_type()
         print(f"GUID {guid}")
         print(f"DLL {c.family} v{c.version} ({c.exports} procedures)  {c.path}")
         print(f"bcdDevice(REV) = 0x{rev:04X}")
+        print(f"CHIP = {chip_name(ctype)}, efuse protocol = {efuse_protocol(ctype)[0] or 'unknown'}")
         print(f"  0xD81A USB_MISC_0 = 0x{m0:04X}")
         print(f"  0xD81F USB_MISC_1 = 0x{m1:02X}")
         print(f"  0xCFDB EFUSE(PASS_THRU) = 0x{cfdb:02X}   bit0(RT-clone)={cfdb & 1}  bit1(AUX-clone)={(cfdb >> 1) & 1}")
