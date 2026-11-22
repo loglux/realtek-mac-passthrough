@@ -95,10 +95,10 @@ function Demo-Py($script, $argline) {
         $ff = 'ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|'
         return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8153 protocol)",
           "STORAGE flash = PUYA 2 MB - holds the driver install disk, not chip settings","",
-          "=== EFUSE (first 192 bytes, one-time programmable) ===","0x000: $ff","0x010: $ff","...","0x0B0: $ff",
+          "=== EFUSE (256 bytes - the whole address space, one-time programmable) ===","0x000-0x0FF: all FF",
           "records:","  (none - the area is empty)","in plain words:",
           "  no setting records at all - the chip takes nothing from its efuse and runs on its factory defaults",
-          "  0x000-0x0BF  all FF = empty: erased / never written (FF is the blank state, not data)",
+          "  0x000-0x0FF  all FF = empty: never written (256 bytes free; FF is the blank state)",
           "  no 0xCFDB record - the pass-through bits are the chip's own default",
           "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself","",
           "=== SPI FLASH (first 256 bytes) - driver install disk, not chip settings ===",
@@ -108,12 +108,12 @@ function Demo-Py($script, $argline) {
           "  the chip does not load settings from this flash (RTL8153 datasheet 6.4: efuse or EEPROM only)") -join "`r`n")
       }
       $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8156 protocol)","STORAGE flash = none","",
-        "=== EFUSE (first 256 bytes, one-time programmable) ===",
+        "=== EFUSE (2048 bytes - the whole address space, one-time programmable) ===",
         '0x000: 45 c0 00 00 11 22 33 44 66 41 d8 22 98 b3 42 cf  |E...."3DfA."..B.|')
       # records sit back to back; a burned record is appended right after the last one (the parser stops at the first FF)
       $lines += $(if ($g -eq 'green') { '0x010: dc 20 00 64 40 cf db 01 40 cf db 03 ff ff ff ff  |. .d@...@.......|' }
                   else { '0x010: dc 20 00 64 40 cf db 01 ff ff ff ff ff ff ff ff  |. .d@...........|' })
-      $lines += @('0x020: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|',"...","records:",
+      $lines += @('0x020-0x7FF: all FF',"records:",
         "  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)",
         "  0x009: write [98 B3] -> reg 0xD822",
         "  0x00E: write [20 00 64] -> reg 0xCFDC",
@@ -122,9 +122,9 @@ function Demo-Py($script, $argline) {
       $lines += ("  => 0xCFDB ends up as 0x{0} (the last record wins)" -f $(if ($g -eq 'green') {'03'} else {'01'}))
       $lines += "in plain words:"
       $lines += $(if ($g -eq 'green') { @("  0x000-0x01B  5 setting record(s), listed above; the chip applies them at power-on",
-                                          "  0x01C-0x0FF  all FF = empty: erased / never written (FF is the blank state, not data)") }
+                                          "  0x01C-0x7FF  all FF = empty: never written (2020 bytes free; FF is the blank state)") }
                   else { @("  0x000-0x017  4 setting record(s), listed above; the chip applies them at power-on",
-                           "  0x018-0x0FF  all FF = empty: erased / never written (FF is the blank state, not data)") })
+                           "  0x018-0x7FF  all FF = empty: never written (2024 bytes free; FF is the blank state)") })
       $lines += "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself"
       return ($lines -join "`r`n")
     }

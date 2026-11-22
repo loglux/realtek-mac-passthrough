@@ -20,17 +20,41 @@ from storage import flash_name, has_flash
 
 NAMES = {0xC000: "MAC address", 0xCFDB: "SW_FEATURE - MAC clone / pass-through bits",
          0xD81A: "USB_MISC_0 - chip variant (AD marker)", 0xD81F: "USB_MISC_1 - chip variant (BD/BND)"}
-EFUSE_BYTES = 256   # the whole efuse: a burned record sits past 0x80 (e.g. 0x080 on a burned RTL8156)
-EFUSE8153_BYTES = 192   # the user efuse RTUNicPG reads on an RTL8153B
+EFUSE_BYTES = 2048      # the whole efuse address space of the dword protocol (9-bit dword address)
+EFUSE8153_BYTES = 256   # the whole address space of the older protocol (7-bit word address)
 FLASH_BYTES = 256       # only the start of the flash is shown (header of the driver install disk)
 
 
 def _hex(data: bytes, base: int = 0):
-    for i in range(0, len(data), 16):
+    """Hex dump; runs of all-FF lines are folded into one line so a 2 KB efuse stays readable."""
+    i, n = 0, len(data)
+    while i < n:
         chunk = data[i:i + 16]
+        if all(b == 0xFF for b in chunk):
+            j = i
+            while j + 16 <= n and all(b == 0xFF for b in data[j:j + 16]):
+                j += 16
+            if j - i > 16:
+                print(f"0x{base + i:03X}-0x{base + j - 1:03X}: all FF")
+                i = j
+                continue
         hexs = " ".join(f"{b:02x}" for b in chunk)
         text = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
         print(f"0x{base + i:03X}: {hexs:<47}  |{text}|")
+        i += 16
+
+
+def _ranges(data: bytes, start: int):
+    """(first, last) offsets of the non-FF runs from `start` on; FF gaps shorter than 16 bytes are bridged."""
+    out = []
+    for i in range(start, len(data)):
+        if data[i] == 0xFF:
+            continue
+        if out and i - out[-1][1] <= 16:
+            out[-1][1] = i
+        else:
+            out.append([i, i])
+    return out
 
 
 def _records(recs):
@@ -60,8 +84,12 @@ def _summary(recs, data, start, store):
         print(f"  0x{start:03X}-0x{end - 1:03X}  {len(recs)} setting record(s), listed above; the chip applies them at power-on")
     else:
         print(f"  no setting records at all - the chip takes nothing from its {store} and runs on its factory defaults")
-    if end < len(data) and all(b == 0xFF for b in data[end:]):
-        print(f"  0x{end:03X}-0x{len(data) - 1:03X}  all FF = empty: erased / never written (FF is the blank state, not data)")
+    others = _ranges(data, end)
+    free_to = (others[0][0] if others else len(data)) - 1
+    if end <= free_to:
+        print(f"  0x{end:03X}-0x{free_to:03X}  all FF = empty: never written ({free_to - end + 1} bytes free; FF is the blank state)")
+    for a, b in others:
+        print(f"  0x{a:03X}-0x{b:03X}  other data - not setting records (the records end at the first FF), not decoded")
     regs = {r["reg"] for r in recs if r["kind"] == "reg"}
     if 0xCFDB not in regs:
         print("  no 0xCFDB record - the pass-through bits are the chip's own default")
@@ -104,7 +132,7 @@ def main(argv):
                                     if flash is not None else "none"))
 
         if efuse is not None:
-            print(f"\n=== EFUSE (first {len(efuse)} bytes, one-time programmable) ===")
+            print(f"\n=== EFUSE ({len(efuse)} bytes - the whole address space, one-time programmable) ===")
             _hex(efuse)
             print("records:")
             recs = parse_autoload_records(efuse)
