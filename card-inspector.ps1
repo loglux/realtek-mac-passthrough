@@ -146,7 +146,7 @@ function Demo-Py($script, $argline) {
         "PLAN record = 41 D8 1A 00 10  (USB_MISC_0 = 0x1000, the -AD marker)","PLAN at = 0x00",
         "PLAN byte 0x01 = 0xD8   0xDD00 <- 0x4080B1FF","PLAN byte 0x02 = 0x1A   0xDD00 <- 0x4081FE36",
         "PLAN byte 0x03 = 0x00   0xDD00 <- 0x400101FF","PLAN byte 0x04 = 0x10   0xDD00 <- 0x4082FE24",
-        "PLAN byte 0x00 = 0x41   0xDD00 <- 0x4080FE83   (header, burned last - activates the record)","PLAN RESULT = OK")
+        "PLAN byte 0x00 = 0x41   0xDD00 <- 0x4080FE83   (header, burned last - activates the record)","PLAN PROTOCOL = type 1 - written from Realtek's tool, not yet proven on hardware","PLAN RESULT = OK")
       if ($argline -like '*--burn*') {
         $script:demoAD = $true
         return (($plan + "BURN byte 0x01 = 0xD8, read back 0xD8  OK" + "BURN byte 0x02 = 0x1A, read back 0x1A  OK" +
@@ -567,12 +567,15 @@ function Preview {
       $res = Rx $out 'PLAN RESULT = (\S+)'; $why = Rx $out 'PLAN RESULT = \S+ \((.*)\)'
       $rec = Rx $out 'PLAN record = ([0-9A-F ]+?)\s{2}'; $at = Rx $out 'PLAN at = (0x[0-9A-Fa-f]+)'
       $dot = '   ' + [char]0x00B7 + '   '
+      $proto = Rx $out 'PLAN PROTOCOL = (.+?) - '; $proven = $out -match 'PLAN PROTOCOL = .+ - proven on hardware'
       if ($res -eq 'OK') {
         $script:previewOk = $true; $script:adAt = $at
-        Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record $rec  at efuse offset $at" + $dot + 'blank space' + $dot + 'data first, header last')
+        if ($proven) {
+          Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record $rec  at efuse offset $at" + $dot + 'blank space' + $dot + 'data first, header last')
+        } else {
+          Set-Result 'warn' 'Ready to burn  -  nothing written yet' ("Record $rec  at offset $at" + $dot + "efuse $proto" + $dot + 'protocol not yet proven on hardware')
+        }
         Set-Btn $btnA2 '2   Burn -AD marker' 'danger' $true
-      } elseif ($res -eq 'PLAN-ONLY') {
-        Set-Result 'info' 'Plan only  -  nothing written' ("Record $rec  at efuse offset $at" + $dot + 'this chip uses the V3 protocol' + $dot + 'burning with it is not enabled yet')
       } elseif ($res -eq 'NOT') {
         Set-Result 'warn' 'The chip already reports the -AD marker' 'Nothing to burn. Press Rescan if the tiles have not caught up.'
       } else {

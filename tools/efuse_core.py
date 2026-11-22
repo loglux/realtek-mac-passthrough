@@ -332,6 +332,23 @@ def efuse8153_write_word(addr: int, old_byte: int, new_byte: int) -> int:
     return (b << 8 | 0x00FF) if addr & 1 else (b | 0xFF00)
 
 
+def record_dword_writes(area: bytes, at: int, rec: bytes) -> list:
+    """Type 2 (dword) efuse: the dword writes that put `rec` at byte `at`, right after the last record - no FF
+    gap, since FF ends the records. Bytes of a touched dword outside `rec` keep their current value (they are
+    either earlier records or still blank). Returns [(dwaddr, old, new)], the dword holding the header byte
+    last, so the record only becomes visible once everything after its header is in place."""
+    first, last = at >> 2, (at + len(rec) - 1) >> 2
+    out = []
+    for dw in range(first, last + 1):
+        old = bytes(area[dw * 4:dw * 4 + 4])
+        new = bytearray(old)
+        for i, b in enumerate(rec):
+            if dw * 4 <= at + i < dw * 4 + 4:
+                new[at + i - dw * 4] = b
+        out.append((dw, int.from_bytes(old, "little"), int.from_bytes(bytes(new), "little")))
+    return out[1:] + out[:1]
+
+
 def efuse_v3_write_command(addr: int, word: int) -> int:
     """V3 protocol (late RTL8153B/C): the 0xDD00 dword that programs `word` (from efuse8153_write_word) at byte
     `addr` - bit30 = write, the even byte address in bits 23..16, no bit rotation (Realtek's tool 2.0.19/2.0.30)."""

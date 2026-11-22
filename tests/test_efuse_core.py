@@ -171,6 +171,19 @@ def test_chip_variants():
     assert ec.chip_variant(0x5001, 0, 0) == (0xA01, False) and ec.variant_name(0xA01) == "RTL8157"
     assert ec.chip_name(0x3106, 0x216, True) == "RTL8153E (type 0x3106, a revision not in Realtek's tables)"
 
+def test_record_dword_writes():
+    rec = bytes.fromhex("41d81a0010")
+    # aligned start: two dwords, the header dword last
+    area = b"\xff" * 16
+    w = ec.record_dword_writes(area, 4, rec)
+    assert [(d, f"{o:08X}", f"{n:08X}") for d, o, n in w] == [(2, "FFFFFFFF", "FFFFFF10"), (1, "FFFFFFFF", "001AD841")]
+    # records end mid-dword at 0x06: bytes 4..5 (AA BB) are kept, the record starts at 6 with no FF gap
+    #   dword 1 (bytes 4..7) = AA BB 41 D8 -> 0xD841BBAA (header, last); dword 2 (bytes 8..11) = 1A 00 10 FF
+    area = bytes.fromhex("40cfdb03aabb") + b"\xff" * 10
+    w = ec.record_dword_writes(area, 6, rec)
+    assert w == [(2, 0xFFFFFFFF, 0xFF10001A), (1, 0xFFFFBBAA, 0xD841BBAA)]
+
+
 def test_v3_write_command():
     # the AD marker 41 D8 1A 00 10 at 0x18 on a blank V3 area: byte 0x19 = D8 -> odd -> D8 << 8 | 0xFF
     assert ec.efuse_v3_write_command(0x19, ec.efuse8153_write_word(0x19, 0xFF, 0xD8)) == 0x400CD8FF

@@ -92,6 +92,12 @@ def main(argv):
             if not ap["free"]:
                 print("!! append point is NOT free (not 0xFFFFFFFF) - BURN ABORTED for safety.")
                 return 1
+            if ap["last_significant"] + 1 != ap["append"]:
+                # the records end mid-dword: a dword-aligned record would sit behind FF bytes, and FF ends the
+                # records - the chip would never load it
+                print(f"!! the records end at 0x{ap['last_significant'] + 1:X}, not on a dword boundary - a record at "
+                      f"0x{ap['append']:X} would sit behind FF and never load. BURN ABORTED for safety.")
+                return 1
             if not do_burn:
                 print("=== DRY RUN: nothing written. Add --burn to write. ===")
                 return 0

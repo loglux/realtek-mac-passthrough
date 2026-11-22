@@ -6,11 +6,16 @@ Usage:
   python -I marker.py {InterfaceGUID} --burn     burn it (re-runs every check first)
   [--dll new|old|auto] on either
 
-The marker is one autoload record, USB_MISC_0 (0xD81A) = 0x1000 -> 41 D8 1A 00 10, appended to the efuse
-records. The chip applies it at power-on, so re-plug the card afterwards.
-Safe order: the record's data bytes are burned first while its header byte is still 0xFF - to the chip a
-0xFF header means "no more records", so they are invisible. Each byte is read back; only if all of them are
-right is the header burned, last. A mismatch before that leaves the card behaving exactly as before.
+The marker is one autoload record, USB_MISC_0 (0xD81A) = 0x1000 -> 41 D8 1A 00 10, appended right after the
+last record (no FF gap - FF ends the records). The chip applies it at power-on, so re-plug the card afterwards.
+The chip type picks the efuse protocol, the way Realtek's own tool does:
+  type 1          byte by byte, 0xDD00 with Realtek's bit rotation          - not yet proven on hardware
+  type 2 (dword)  four bytes at a time through 0xDD04                       - proven (the 0xCFDB burn, RTL8156)
+  type 3 (V3)     byte by byte, 0xDD00 with prepare / write / finish bits   - not yet proven on hardware
+Safe order: everything after the header byte is burned first while the header is still 0xFF - to the chip a
+0xFF header means "no more records", so it is invisible. Each write is read back; only if all are right is the
+header burned, last. A mismatch before that leaves the card behaving exactly as before.
+A chip revision outside Realtek's tables is refused, as Realtek's tool refuses it.
 The output format is stable - the GUI parses the 'PLAN / BURN ...' lines and shows 'STEP = ...' as progress.
 """
 import os
@@ -20,19 +25,32 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling mod
 
 from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, build_record_bytes,  # noqa: E402
                         efuse8153_encode_write, efuse8153_write_word, efuse_v3_write_command,
-                        parse_autoload_records)
+                        parse_autoload_records, record_dword_writes)
 from passthru import AD_MASK, AD_VALUE  # noqa: E402
 from rtldiag import EfuseUnavailable, RtlDiag  # noqa: E402
 
 REG, VALUE = 0xD81A, 0x1000          # USB_MISC_0 = 0x1000: r8152 sees an RTL8153-AD
+PROVEN = {EFUSE_DWORD: True, EFUSE_OLD: False, EFUSE_V3: False}   # burned and verified on a real card?
 
 
 def step(text):
     print(f"STEP = {text}", flush=True)
 
 
+def _read_area(c, kind, size):
+    if kind == EFUSE_OLD:
+        return c.efuse8153_dump(size)
+    if kind == EFUSE_V3:
+        return c.efuse_v3_dump(size)
+    c.efuse_enable()
+    try:
+        return c.efuse_dump(size)
+    finally:
+        c.efuse_disable()
+
+
 def plan(c):
-    """Every check. Returns (at, record, order) when a burn may go ahead, else None."""
+    """Every check. Returns a plan dict when a burn may go ahead, else None."""
     m0 = c.usb_read(REG, 2)
     cf = c.usb_read(0xCFDB, 1)
     print(f"USB_MISC_0 now = 0x{m0:04X}   0xCFDB now = 0x{cf:02X}")
@@ -45,68 +63,100 @@ def plan(c):
     info = c.chip_info()
     kind, size = info["protocol"], info["size"]
     print(f"CHIP {info['name']}, efuse protocol = {kind or 'unknown'}")
-    if info["new_chip"]:
-        print("PLAN RESULT = REFUSED (a chip revision outside Realtek's tables - its tool refuses it too)")
-        return None
-    if kind not in (EFUSE_OLD, EFUSE_V3):
-        why = {None: "the chip type is not known to this tool",
-               EFUSE_DWORD: "this chip's efuse uses the dword protocol (RTL8156 family) - the marker writer is for the RTL8153 family"}[kind]
-        print(f"PLAN RESULT = REFUSED ({why})")
+    if kind is None or info["new_chip"]:
+        print("PLAN RESULT = REFUSED (a chip revision outside Realtek's tables - its own tool refuses it too)")
         return None
     try:
-        area = c.efuse8153_dump(size) if kind == EFUSE_OLD else c.efuse_v3_dump(size)
+        area = _read_area(c, kind, size)
     except EfuseUnavailable as e:
         print(f"PLAN RESULT = REFUSED (the efuse could not be read: {e})")
         return None
     recs = parse_autoload_records(area)
     at = recs[-1]["at"] + recs[-1]["size"] if recs else 0
     rec = build_record_bytes(REG, VALUE.to_bytes(2, "little"))
-    print(f"EFUSE = {size} bytes ({kind} protocol), records = {len(recs)}, "
-          f"non-FF bytes = {sum(b != 0xFF for b in area)}")
-    if at == 0 and sum(b != 0xFF for b in area) == 0:
-        print("PLAN NOTE = the efuse reads completely blank - check the settings dump against Realtek's own tool first")
+    print(f"EFUSE = {size} bytes ({kind} protocol), records = {len(recs)}, non-FF bytes = {sum(b != 0xFF for b in area)}")
+    if not recs:
+        print("PLAN NOTE = no records at all - compare the settings dump with Realtek's own tool before burning")
     if any(r["kind"] == "reg" and r["reg"] == REG for r in recs):
         print("PLAN RESULT = BLOCKED (the efuse already holds a USB_MISC_0 record)")
         return None
-    if at + len(rec) + 1 > size - 1 or any(b != 0xFF for b in area[at:at + len(rec) + 1]):
+    if recs and recs[-1]["kind"] == "unknown":
+        print("PLAN RESULT = BLOCKED (the records end in a type this tool cannot size - cannot tell where they stop)")
+        return None
+    end = at + len(rec)                        # this byte must stay FF: it ends the records after ours
+    if end >= size - 1 or any(b != 0xFF for b in area[at:end + 1]):
         print(f"PLAN RESULT = BLOCKED (no blank room at 0x{at:02X} for {len(rec)} bytes + end marker before the write counter)")
         return None
     print(f"PLAN record = {rec.hex(' ').upper()}  (USB_MISC_0 = 0x{VALUE:04X}, the -AD marker)")
     print(f"PLAN at = 0x{at:02X}")
-    order = list(range(1, len(rec))) + [0]
-    for i in order:
-        a = at + i
-        w = efuse8153_write_word(a, 0xFF, rec[i])
-        cmd = efuse8153_encode_write(a >> 1, w) if kind == EFUSE_OLD else efuse_v3_write_command(a, w)
-        print(f"PLAN byte 0x{a:02X} = 0x{rec[i]:02X}   0xDD00 <- 0x{cmd:08X}"
-              + ("   (header, burned last - activates the record)" if i == 0 else ""))
-    if kind == EFUSE_V3:
-        print("PLAN V3 sequence per byte (Realtek's tool 2.0.30): 0xE85B |= 0x10 and USB 0xD380 |= 0x0C for the session; "
-              "0xE85B |= 0xC4; 0xDD00 |= bit27, wait clear; 0xDD00 <- command above, wait bit30 clear; "
-              "0xDD00 |= bit28, wait clear; 0xE85B &= 0x3B; read the byte back")
-        print("PLAN RESULT = PLAN-ONLY (this chip uses the V3 protocol - the plan is shown, burning with it is not enabled yet)")
-        return None
+    p = {"kind": kind, "at": at, "rec": rec}
+    if kind == EFUSE_DWORD:
+        p["dwords"] = record_dword_writes(area, at, rec)
+        for n, (dw, old, new) in enumerate(p["dwords"], 1):
+            last = n == len(p["dwords"])
+            print(f"PLAN dword 0x{dw * 4:03X} = 0x{new:08X} (now 0x{old:08X})   0xDD04 <- 0x{(dw & 0x1FF) | 0x4000:04X}"
+                  + ("   (holds the header, burned last - activates the record)" if last else ""))
+    else:
+        p["order"] = list(range(1, len(rec))) + [0]
+        for i in p["order"]:
+            a = at + i
+            w = efuse8153_write_word(a, 0xFF, rec[i])
+            cmd = efuse8153_encode_write(a >> 1, w) if kind == EFUSE_OLD else efuse_v3_write_command(a, w)
+            print(f"PLAN byte 0x{a:02X} = 0x{rec[i]:02X}   0xDD00 <- 0x{cmd:08X}"
+                  + ("   (header, burned last - activates the record)" if i == 0 else ""))
+        if kind == EFUSE_V3:
+            print("PLAN V3 per byte (Realtek's tool 2.0.30): 0xE85B.0x10 and USB 0xD380 |= 0x0C for the session; "
+                  "efuse on; 0xDD00 bit27, wait; command, wait bit30; bit28, wait; efuse off; read back")
+    print(f"PLAN PROTOCOL = {kind} - " + ("proven on hardware" if PROVEN[kind] else
+                                          "written from Realtek's tool, not yet proven on hardware"))
     print("PLAN RESULT = OK")
-    return at, rec, order
+    return p
+
+
+def _stop(header):
+    if header:
+        print("BURN RESULT = STOPPED (the header did not verify - check the settings dump)")
+    else:
+        print("BURN RESULT = STOPPED (a data byte did not verify; the header is still FF, so the record is not "
+              "active and the card behaves as before)")
+    return 1
 
 
 def burn(c):
     p = plan(c)
     if p is None:
         return 1
-    at, rec, order = p
-    for n, i in enumerate(order, 1):
-        a = at + i
-        step(f"Burning byte {n} of {len(order)}" + (" - the header, last" if i == 0 else "") + "...")
-        back = c.efuse8153_write_byte(a, rec[i])
-        print(f"BURN byte 0x{a:02X} = 0x{rec[i]:02X}, read back 0x{back:02X}  {'OK' if back == rec[i] else 'MISMATCH'}")
-        if back != rec[i]:
-            if i:
-                print("BURN RESULT = STOPPED (a data byte did not verify; the header is still FF, so the record is "
-                      "not active and the card behaves as before)")
-            else:
-                print("BURN RESULT = STOPPED (the header byte did not verify - check the settings dump)")
-            return 1
+    kind, at, rec = p["kind"], p["at"], p["rec"]
+    if kind == EFUSE_DWORD:
+        c.efuse_enable()
+        try:
+            for n, (dw, old, new) in enumerate(p["dwords"], 1):
+                last = n == len(p["dwords"])
+                step(f"Burning dword {n} of {len(p['dwords'])}" + (" - with the header, last" if last else "") + "...")
+                cur = c.efuse_read_dword(dw)
+                if cur != old:
+                    print(f"BURN dword 0x{dw * 4:03X} changed since the plan (0x{cur:08X} != 0x{old:08X}) - nothing written")
+                    return _stop(last)
+                c.efuse_write_dword(dw, new)
+                back = c.efuse_read_dword(dw)
+                print(f"BURN dword 0x{dw * 4:03X} = 0x{new:08X}, read back 0x{back:08X}  {'OK' if back == new else 'MISMATCH'}")
+                if back != new:
+                    return _stop(last)
+        finally:
+            c.efuse_disable()
+    else:
+        saved = c.v3_session_begin(for_write=True) if kind == EFUSE_V3 else None
+        try:
+            for n, i in enumerate(p["order"], 1):
+                a = at + i
+                step(f"Burning byte {n} of {len(p['order'])}" + (" - the header, last" if i == 0 else "") + "...")
+                back = (c.efuse8153_write_byte(a, rec[i]) if kind == EFUSE_OLD else c.efuse_v3_write_byte(a, rec[i]))
+                print(f"BURN byte 0x{a:02X} = 0x{rec[i]:02X}, read back 0x{back:02X}  {'OK' if back == rec[i] else 'MISMATCH'}")
+                if back != rec[i]:
+                    return _stop(i == 0)
+        finally:
+            if saved is not None:
+                c.v3_session_end(saved)
     print(f"BURN RESULT = OK (record burned and verified at 0x{at:02X}; unplug and re-plug the card to load it)")
     return 0
 
