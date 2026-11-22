@@ -95,7 +95,7 @@ def test_pg_stamp():
     # WAVLINK RTL8156BG: Realtek's tool reported "Nic PG version = 2.19", "Nic CFG version = 1028" for 13 02 04 04.
     assert ec.describe_pg_stamp(bytes.fromhex("13020404")) == "PG tool 2.19, CFG 1028"
     # The burned RTL8156 dongle (ETH6_EFUSE above) carries 0F 02 01 04.
-    stamp = next(r for r in ec.parse_autoload_records(ETH6_EFUSE) if r["reg"] == ec.PG_STAMP_REG)
+    stamp = next(r for r in ec.parse_autoload_records(ETH6_EFUSE) if r["reg"] in ec.PG_STAMP_REGS)
     assert ec.describe_pg_stamp(stamp["data"]) == "PG tool 2.15, CFG 1025"
     assert ec.describe_pg_stamp(b"\x01") == ""
 def _cell_as_read(waddr, dword):
@@ -123,6 +123,36 @@ def test_efuse8153_blank_reads_ff():
     # A blank cell reads back 0xFFFF on a real UGREEN (raw dword 0x00..FFFF, bit16 = 1 in hi bit 7).
     assert ec.efuse8153_decode_read(0x0080FFFF) == 0xFFFF
     assert ec.efuse8153_decode_read(0x00DFFFFF) == 0xFFFF
+
+
+UGREEN_EFUSE = bytes.fromhex(   # real efuse of a plain RTL8153B (type 0x3106), read by Realtek's tool and by ours
+    "40 cc 24 20 25 c0 00 ec 1a c3 12 34 ad 20 e8 22"
+    "08 23 e8 18 18 02 05 04") + b"\xff" * (0xD0 - 0x19) + b"\xfe"
+
+
+def test_chip_type_real_cards():
+    # UGREEN: 0xE612 = 0x6310, 0xCD14 = 0x12 -> 0x3106 (Realtek's tool: "RTL8153BvC"), V3 protocol, 208 bytes
+    assert ec.chip_type(0x6310, 0x12) == 0x3106
+    assert ec.efuse_protocol(0x3106) == (ec.EFUSE_V3, 0xD0)
+    # WAVLINK: 0xE612 & 0x7CF0 = 0x7410 -> RTL8156B family, dword protocol
+    assert ec.efuse_protocol(ec.chip_type(0x7410, 0)) == (ec.EFUSE_DWORD, 0x510)
+
+
+def test_chip_type_8153b_subrevisions():
+    assert ec.chip_type(0x6000, 0) == 0x3101
+    assert [ec.chip_type(0x6010, x) for x in (0x00, 0x01, 0x11, 0x02, 0x12)] == [0x3102, 0x3103, 0x3104, 0x3105, 0x3106]
+    assert ec.chip_type(0x6010, 0x03) == 0 and ec.chip_type(0x6020, 0) == 0     # unknown -> 0 (refuse)
+    assert [ec.chip_type(0x6400, x) for x in (0x00, 0x01, 0x11, 0x02, 0x12)] == [0x3201, 0x3202, 0x3203, 0x3204, 0x3205]
+    assert ec.efuse_protocol(0x3102)[0] == ec.EFUSE_OLD and ec.efuse_protocol(0x3104)[0] == ec.EFUSE_DWORD
+    assert ec.efuse_protocol(0) == (None, 0)
+
+
+def test_ugreen_records_and_stamp():
+    recs = ec.parse_autoload_records(UGREEN_EFUSE)
+    assert [(r["at"], r["reg"]) for r in recs] == [(0x00, 0xCC24), (0x04, 0xC000), (0x0D, 0xE822), (0x11, 0xE818)]
+    assert recs[1]["data"] == bytes.fromhex("ec1ac31234ad")
+    assert ec.describe_pg_stamp(recs[3]["data"]) == "PG tool 2.24, CFG 1029"    # Realtek's tool: V2.24(1.029)
+    assert ec.find_append_point(UGREEN_EFUSE[:-1])["append"] == 0x18            # a new record goes after these
 
 
 def test_parse_records_unknown_type_stops():

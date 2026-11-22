@@ -69,7 +69,70 @@ def find_append_point(data: bytes) -> dict:
     }
 
 
-PG_STAMP_REG = 0xD3A0   # Realtek's programming tool leaves its own version and its CFG version here
+# --- Chip type, the way Realtek's programming tool works it out (2.0.19 / 2.0.30, see notes) ---
+# PLA 0xE612 & 0x7CF0: the top part names the family, bits 7..4 the revision inside it. A late RTL8153B/C
+# carries one more sub-revision byte in USB 0xCD14 (low nibble / high nibble).
+_FAMILY = {0x4800: 0x1001, 0x4C00: 0x2001, 0x5C00: 0x3001, 0x6000: 0x3101, 0x6400: 0x3201,
+           0x7000: 0x4001, 0x7400: 0x4101}
+
+
+def chip_type(e612: int, cd14: int) -> int:
+    """Realtek's internal chip type (e.g. 0x3106) from PLA 0xE612 and USB 0xCD14, or 0 if not known.
+
+    Only what the efuse protocol depends on is resolved exactly: RTL8153B (0x31xx) and RTL8153C (0x32xx)
+    with their 0xCD14 sub-revisions. Other families return their base type (all of a family share a protocol).
+    """
+    fam = e612 & 0x7C00
+    rev = e612 & 0xF0
+    if fam not in _FAMILY:
+        return 0
+    base = _FAMILY[fam]
+    if fam == 0x6000:                       # RTL8153B
+        if rev == 0:
+            return 0x3101
+        if rev != 0x10:
+            return 0                         # a revision the tool flags as a new chip
+        base = 0x3102
+    elif fam == 0x6400:                     # RTL8153C
+        if rev != 0:
+            return 0
+        base = 0x3201
+    else:
+        return base
+    if cd14 == 0:
+        return base
+    lo, hi = cd14 & 0xF, cd14 >> 4
+    if lo not in (1, 2) or hi not in (0, 1):
+        return 0
+    step = (lo - 1) * 2 + hi + 1             # 1/0 -> +1, 1/1 -> +2, 2/0 -> +3, 2/1 -> +4
+    return base + step
+
+
+# Efuse protocol and size by chip type (Realtek's tool: 0xC0 / 0xD0 / 0x510 bytes, write counter in the last byte)
+EFUSE_OLD, EFUSE_V3, EFUSE_DWORD = "old", "v3", "dword"
+_OLD = {0x1001, 0x2001, 0x2002, 0x2003, 0x3001, 0x3002, 0x3003, 0x3004, 0x3005, 0x3101, 0x3102, 0x3201}
+_V3 = {0x3105, 0x3106, 0x3204, 0x3205}
+
+
+def efuse_protocol(ctype: int):
+    """('old' | 'v3' | 'dword', size in bytes) for a chip type from chip_type(), or (None, 0) if unknown."""
+    if ctype in _OLD:
+        return EFUSE_OLD, 0xC0
+    if ctype in _V3:
+        return EFUSE_V3, 0xD0
+    if ctype:
+        return EFUSE_DWORD, 0x510
+    return None, 0
+
+
+def chip_name(ctype: int) -> str:
+    """A family name for display; the exact sub-revision is shown as Realtek's type number."""
+    fam = {0x10: "RTL8152", 0x20: "RTL8152B", 0x30: "RTL8153", 0x31: "RTL8153B", 0x32: "RTL8153C",
+           0x40: "RTL8156", 0x41: "RTL8156B"}.get(ctype >> 8, "Realtek")
+    return f"{fam} (type 0x{ctype:04X})" if ctype else "unknown Realtek chip"
+
+
+PG_STAMP_REGS = (0xD3A0, 0xE818)   # Realtek's tool leaves its own and its CFG version here (RTL8156 / RTL8153B)
 
 
 def describe_pg_stamp(data: bytes) -> str:

@@ -13,7 +13,7 @@ import os
 import struct
 from ctypes import wintypes
 
-from efuse_core import byte_enable, efuse8153_decode_read, efuse8153_encode_write, efuse8153_write_word
+from efuse_core import byte_enable, chip_type, efuse8153_decode_read, efuse8153_encode_write, efuse8153_write_word
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(os.path.dirname(_HERE))   # CardInspector/tools -> CardInspector -> repo root
@@ -460,6 +460,37 @@ class RtlDiag:
     def efuse8153_dump(self, nbytes=192):
         """User efuse of an older-family chip (RTUNicPG reads 192 bytes for RTL8153B)."""
         return bytes(self.efuse8153_read_byte(a) for a in range(nbytes))
+
+    def chip_type(self):
+        """Realtek's chip type (efuse_core.chip_type) from PLA 0xE612 and USB 0xCD14; 0 if not known."""
+        e612 = int.from_bytes(self.dread(0xE612, 2), "little")
+        cd14 = self.usb_read(0xCD14, 1) if self._USBRd is not None else 0
+        return chip_type(e612, cd14)
+
+    def efuse_v3_dump(self, nbytes=0xD0):
+        """Efuse of a late RTL8153B/C (types 0x3105/06, 0x3204/05), as Realtek's tool 2.0.19 reads it:
+        0xE85B |= 0x10 and |= 0xC4, then per byte 0xDD00 = 0x80000000 | (addr & 0x1FE) << 15, wait for bit31,
+        take the low (even address) or second (odd) byte. Without the 0x10 bit the controller answers with FF.
+        0xE85B is put back as it was."""
+        orig = self.dread(0xE85B, 1)[0]
+        self.dwrite(0xE85B, 1, bytes([orig | 0x10]))
+        self.efuse_enable()
+        out = bytearray()
+        try:
+            for a in range(nbytes):
+                self.dwrite(0xDD00, 4, ((0x80000000 | ((a & 0x1FE) << 15)) & 0xFFFFFFFF).to_bytes(4, "little"))
+                for _ in range(self.EFUSE_POLLS):
+                    v = int.from_bytes(self.dread(0xDD00, 4), "little")
+                    if not v & 0x80000000:
+                        break
+                else:
+                    raise EfuseUnavailable("efuse controller does not answer (V3 protocol). Nothing was written.")
+                out.append((v >> 8 if a & 1 else v) & 0xFF)
+        finally:   # put it back in Realtek's order: efuse off (& 0x3B), then the 0x10 bit (& 0xEF)
+            self.efuse_disable()
+            v = self.dread(0xE85B, 1)[0]
+            self.dwrite(0xE85B, 1, bytes([(v & 0xEF) | (orig & 0x10)]))
+        return bytes(out)
 
     def efuse_read_dword(self, dw):
         self.dwrite(0xDD04, 2, ((dw & 0x1ff) | 0x8000).to_bytes(2, "little"))

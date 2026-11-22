@@ -18,13 +18,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import (build_record_bytes, efuse8153_encode_write, efuse8153_write_word,  # noqa: E402
-                        parse_autoload_records)
+from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, build_record_bytes, chip_name,  # noqa: E402
+                        efuse8153_encode_write, efuse8153_write_word, efuse_protocol, parse_autoload_records)
 from passthru import AD_MASK, AD_VALUE  # noqa: E402
 from rtldiag import EfuseUnavailable, RtlDiag  # noqa: E402
 
 REG, VALUE = 0xD81A, 0x1000          # USB_MISC_0 = 0x1000: r8152 sees an RTL8153-AD
-USER_BYTES = 192                     # the user efuse RTUNicPG reads on an RTL8153B
 
 
 def step(text):
@@ -42,30 +41,32 @@ def plan(c):
     if not cf & 1:
         print("PLAN RESULT = REFUSED (0xCFDB bit0 is not set - on an -AD chip Linux needs it too, so the marker alone would not help)")
         return None
-    c.efuse_enable()
-    try:
-        c.efuse_read_dword(0)
-        print("PLAN RESULT = REFUSED (this chip's efuse uses the RTL8156 protocol - the marker writer is for the RTL8153 family)")
+    ctype = c.chip_type()
+    kind, size = efuse_protocol(ctype)
+    print(f"CHIP {chip_name(ctype)}, efuse protocol = {kind or 'unknown'}")
+    if kind != EFUSE_OLD:
+        why = {None: "the chip type is not known to this tool",
+               EFUSE_DWORD: "this chip's efuse uses the dword protocol (RTL8156 family) - the marker writer is for the RTL8153 family",
+               EFUSE_V3: "this chip's efuse uses the V3 protocol - writing with it is not implemented yet"}[kind]
+        print(f"PLAN RESULT = REFUSED ({why})")
         return None
-    except EfuseUnavailable:
-        pass
-    finally:
-        c.efuse_disable()
     try:
-        area = c.efuse8153_dump(USER_BYTES)
+        area = c.efuse8153_dump(size)
     except EfuseUnavailable as e:
         print(f"PLAN RESULT = REFUSED (the efuse could not be read: {e})")
         return None
     recs = parse_autoload_records(area)
     at = recs[-1]["at"] + recs[-1]["size"] if recs else 0
     rec = build_record_bytes(REG, VALUE.to_bytes(2, "little"))
-    print(f"EFUSE user area = {USER_BYTES} bytes (RTL8153 protocol), records = {len(recs)}, "
+    print(f"EFUSE = {size} bytes (older protocol), records = {len(recs)}, "
           f"non-FF bytes = {sum(b != 0xFF for b in area)}")
+    if at == 0 and sum(b != 0xFF for b in area) == 0:
+        print("PLAN NOTE = the efuse reads completely blank - check the settings dump against Realtek's own tool first")
     if any(r["kind"] == "reg" and r["reg"] == REG for r in recs):
         print("PLAN RESULT = BLOCKED (the efuse already holds a USB_MISC_0 record)")
         return None
-    if at + len(rec) + 1 > USER_BYTES or any(b != 0xFF for b in area[at:at + len(rec) + 1]):
-        print(f"PLAN RESULT = BLOCKED (no blank room at 0x{at:02X} for {len(rec)} bytes + end marker)")
+    if at + len(rec) + 1 > size - 1 or any(b != 0xFF for b in area[at:at + len(rec) + 1]):
+        print(f"PLAN RESULT = BLOCKED (no blank room at 0x{at:02X} for {len(rec)} bytes + end marker before the write counter)")
         return None
     print(f"PLAN record = {rec.hex(' ').upper()}  (USB_MISC_0 = 0x{VALUE:04X}, the -AD marker)")
     print(f"PLAN at = 0x{at:02X}")

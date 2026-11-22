@@ -3,8 +3,8 @@
 Usage:  python -I settings.py {InterfaceGUID} [--dll new|old|auto]
 
 The chip applies its settings at power-on from its efuse (one-time programmable) or an external EEPROM
-(RTL8153 datasheet 6.4). This tool dumps the efuse with its decoded autoload records - trying the RTL8156
-protocol first, then the RTL8153 one - and shows the start of an SPI flash if the card has one; that
+(RTL8153 datasheet 6.4). This tool works out the chip type as Realtek's own tool does (PLA 0xE612, USB 0xCD14),
+dumps the efuse with that type's protocol and its decoded autoload records, and shows the start of an SPI flash if the card has one; that
 flash holds the driver install disk, not chip settings. A controller that does not answer is reported,
 never hung on.
 The output format is stable - the GUI shows it as is.
@@ -14,14 +14,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import PG_STAMP_REG, describe_pg_stamp, parse_autoload_records
+from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, chip_name, describe_pg_stamp,
+                        efuse_protocol, parse_autoload_records)
 from rtldiag import EfuseUnavailable, RtlDiag
 from storage import flash_name, has_flash
 
 NAMES = {0xC000: "MAC address", 0xCFDB: "SW_FEATURE - MAC clone / pass-through bits",
          0xD81A: "USB_MISC_0 - chip variant (AD marker)", 0xD81F: "USB_MISC_1 - chip variant (BD/BND)"}
 EFUSE_BYTES = 2048      # the whole efuse address space of the dword protocol (9-bit dword address)
-EFUSE8153_BYTES = 256   # the whole address space of the older protocol (7-bit word address)
 FLASH_BYTES = 256       # only the start of the flash is shown (header of the driver install disk)
 
 
@@ -64,7 +64,7 @@ def _records(recs):
         dhex = " ".join(f"{b:02X}" for b in r["data"])
         if r["kind"] == "reg":
             nm = NAMES.get(r["reg"], "")
-            if r["reg"] == PG_STAMP_REG and describe_pg_stamp(r["data"]):
+            if r["reg"] in PG_STAMP_REGS and describe_pg_stamp(r["data"]):
                 nm = "programmed with " + describe_pg_stamp(r["data"])
             print(f"  0x{r['at']:03X}: write [{dhex}] -> reg 0x{r['reg']:04X}" + (f"  ({nm})" if nm else ""))
         elif r["kind"] == "raw":
@@ -107,27 +107,32 @@ def main(argv):
     try:
         print(f"GUID {guid}  (DLL: {c.family} v{c.version}, {c.exports} procedures)")
 
-        efuse, proto = None, ""
-        c.pg_enter()
-        c.efuse_enable()
-        try:
-            efuse, proto = c.efuse_dump(EFUSE_BYTES), "RTL8156 protocol"
-        except EfuseUnavailable:
-            pass
-        finally:
-            c.efuse_disable()
-        if efuse is None:                       # older family (RTL8153): the other protocol, read only
-            try:
-                efuse, proto = c.efuse8153_dump(EFUSE8153_BYTES), "RTL8153 protocol"
-            except EfuseUnavailable:
-                pass
-        c.pg_leave()
-
         _, jedec = c.flash_id()
         flash = c.flash_read(0, FLASH_BYTES) if has_flash(jedec) else None
 
+        ctype = c.chip_type()
+        kind, size = efuse_protocol(ctype)
+        print(f"CHIP {chip_name(ctype)}")
+        efuse, proto = None, ""
+        c.pg_enter()
+        try:
+            if kind == EFUSE_DWORD:
+                c.efuse_enable()
+                try:
+                    efuse, proto = c.efuse_dump(EFUSE_BYTES), "dword protocol"
+                finally:
+                    c.efuse_disable()
+            elif kind == EFUSE_V3:
+                efuse, proto = c.efuse_v3_dump(size), "V3 protocol"
+            elif kind == EFUSE_OLD:
+                efuse, proto = c.efuse8153_dump(size), "older protocol"
+        except EfuseUnavailable:
+            efuse = None
+        finally:
+            c.pg_leave()
+
         print("STORAGE efuse = " + (f"responding ({proto})" if efuse is not None else
-              "could not be read - the efuse controller answered neither protocol this tool knows"))
+              "could not be read - chip type not known to this tool, or the controller did not answer"))
         print("STORAGE flash = " + (f"{flash_name(jedec)} - holds the driver install disk, not chip settings"
                                     if flash is not None else "none"))
 

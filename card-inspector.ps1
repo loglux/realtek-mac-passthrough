@@ -98,28 +98,28 @@ function Demo-Py($script, $argline) {
       if ($g -eq 'plain') {
         $ff = 'ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|'
         $ef = if ($script:demoAD) {
-          @("0x000: 41 d8 1a 00 10 ff ff ff ff ff ff ff ff ff ff ff  |A...............|","0x010: $ff","...","0x0B0: $ff","records:",
+          @("0x000: 41 d8 1a 00 10 ff ff ff ff ff ff ff ff ff ff ff  |A...............|","0x010-0x0BF: all FF","records:",
             "  0x000: write [00 10] -> reg 0xD81A  (USB_MISC_0 - chip variant (AD marker))","in plain words:",
             "  0x000-0x004  1 setting record(s), listed above; the chip applies them at power-on",
-            "  0x005-0x0BF  all FF = empty: erased / never written (FF is the blank state, not data)",
+            "  0x005-0x0BF  all FF = empty: never written (187 bytes free; FF is the blank state)",
             "  no 0xCFDB record - the pass-through bits are the chip's own default")
         } else {
-          @("0x000: $ff","0x010: $ff","...","0x0B0: $ff","records:","  (none - the area is empty)","in plain words:",
+          @("0x000-0x0BF: all FF","records:","  (none - the area is empty)","in plain words:",
             "  no setting records at all - the chip takes nothing from its efuse and runs on its factory defaults",
-            "  0x000-0x0BF  all FF = empty: erased / never written (FF is the blank state, not data)",
+            "  0x000-0x0BF  all FF = empty: never written (192 bytes free; FF is the blank state)",
             "  no 0xCFDB record - the pass-through bits are the chip's own default",
             "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself")
         }
-        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8153 protocol)",
+        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8153B (type 0x3102)","STORAGE efuse = responding (older protocol)",
           "STORAGE flash = PUYA 2 MB - holds the driver install disk, not chip settings","",
-          "=== EFUSE (first 192 bytes, one-time programmable) ===") + $ef + @("",
+          "=== EFUSE (192 bytes - the whole address space, one-time programmable) ===") + $ef + @("",
           "=== SPI FLASH (first 256 bytes) - driver install disk, not chip settings ===",
           "0x000: 06 02 00 00 00 08 00 00 ff ff ff ff ff ff ff ff  |................|","0x010: $ff","in plain words:",
           "  0x000-0x007  06 02 00 00 00 08 00 00  header of the driver install disk",
           "  0x008-...    FF = empty; the disk image itself starts at 0x1000 (not shown)",
           "  the chip does not load settings from this flash (RTL8153 datasheet 6.4: efuse or EEPROM only)") -join "`r`n")
       }
-      $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8156 protocol)","STORAGE flash = none","",
+      $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8156B (type 0x4101)","STORAGE efuse = responding (dword protocol)","STORAGE flash = none","",
         "=== EFUSE (2048 bytes - the whole address space, one-time programmable) ===",
         '0x000: 45 c0 00 00 11 22 33 44 66 41 d8 22 98 b3 42 cf  |E...."3DfA."..B.|')
       # records sit back to back; a burned record is appended right after the last one (the parser stops at the first FF)
@@ -142,7 +142,7 @@ function Demo-Py($script, $argline) {
     }
     'marker.py' {
       if ($script:demoAD) { return "USB_MISC_0 now = 0x1000   0xCFDB now = 0x03`r`nPLAN RESULT = NOT NEEDED (the chip already reports the -AD marker)" }
-      $plan = @("USB_MISC_0 now = 0x0000   0xCFDB now = 0x03","EFUSE user area = 192 bytes (RTL8153 protocol), records = 0, non-FF bytes = 0",
+      $plan = @("USB_MISC_0 now = 0x0000   0xCFDB now = 0x03","CHIP RTL8153B (type 0x3102), efuse protocol = old","EFUSE = 192 bytes (older protocol), records = 0, non-FF bytes = 0",
         "PLAN record = 41 D8 1A 00 10  (USB_MISC_0 = 0x1000, the -AD marker)","PLAN at = 0x00",
         "PLAN byte 0x01 = 0xD8   0xDD00 <- 0x4080B1FF","PLAN byte 0x02 = 0x1A   0xDD00 <- 0x4081FE36",
         "PLAN byte 0x03 = 0x00   0xDD00 <- 0x400101FF","PLAN byte 0x04 = 0x10   0xDD00 <- 0x4082FE24",
@@ -553,7 +553,7 @@ function Preview {
       $cur = Rx $out '@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})'
       $rng = Rx $out '(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ ='
       if ($out -match 'EFUSE UNAVAILABLE') {
-        Set-Result 'err' 'Can''t burn this chip  -  nothing written' 'Its efuse uses the RTL8153 protocol, which this tool can read but not write.'
+        Set-Result 'err' 'Can''t burn this chip  -  nothing written' 'Its efuse does not use the dword protocol of the RTL8156 family, the only one this tool writes.'
       } elseif ($cur -eq '0xFFFFFFFF' -and $rng) {
         $script:previewOk = $true
         Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record 40 CF DB 03  at efuse offset $rng   " + [char]0x00B7 + '   free slot, factory data untouched')
