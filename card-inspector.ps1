@@ -16,7 +16,7 @@ $ErrorActionPreference = 'Stop'
 $ROOT    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TOOLS   = Join-Path $ROOT 'tools'
 $PY      = 'python'
-$Version = '0.2.1'
+$Version = '0.2.2'
 $script:DemoMode = $Demo.IsPresent -or ($Screenshot -ne '')
 $DEMO_RED_GUID   = '{11111111-1111-1111-1111-111111111111}'
 $DEMO_GREEN_GUID = '{22222222-2222-2222-2222-222222222222}'
@@ -77,7 +77,14 @@ function Demo-Py($script, $argline) {
           "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)",
           "PASSTHRU Linux   = NO   (not a chip variant r8152 recognises (no AD / BND / BD marker))",
           "  storage DC00 = 0x40   SPI flash ID = 85 60 15",
-          "CONFIG STORAGE = efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings") -join "`r`n")
+          "CONFIG STORAGE = efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings",
+          (DJ @{ tool='diag'; rev=0x31FD; cfdb=3; usb_misc_0=0; usb_misc_1=0x40; linux_variant=$null
+                 chip=@{ name='RTL8153UG (type 0x3106)'; type=0x3106; variant=0x220; protocol='type 3 (V3)'; new_chip=$false }
+                 dll=@{ family='Direct_API'; version='5.0.0.2'; exports=216; path='dll\new\RtlDirectDiagLib64.dll' }
+                 layers=@{ Windows=@{ ok=$true; why='AUX-clone bit (0xCFDB bit1) is set' }
+                           PXE=@{ ok=$true; why='both clone bits set - 0x03 verified at pre-boot on a Dell' }
+                           Linux=@{ ok=$false; why='not a chip variant r8152 recognises (no AD / BND / BD marker)' } }
+                 storage=@{ dc00=0x40; jedec='85 60 15'; text='efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings' } })) -join "`r`n")
       }
       $green = $g -eq 'green'
       $cf = if ($green) {'0x03'} else {'0x00'}; $b = if ($green) {1} else {0}; $yn = if ($green) {'YES'} else {'NO '}
@@ -88,7 +95,12 @@ function Demo-Py($script, $argline) {
         "bcdDevice(REV) = 0x3104","CHIP = RTL8156BG (type 0x4102), efuse protocol = type 2 (dword)","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
         ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  chip variant (r8152) = AD",
         ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
-        "  storage DC00 = 0x00   SPI flash ID = 00 00 00","CONFIG STORAGE = efuse (one-time) - no external memory found; EEPROM not probed") -join "`r`n")
+        "  storage DC00 = 0x00   SPI flash ID = 00 00 00","CONFIG STORAGE = efuse (one-time) - no external memory found; EEPROM not probed",
+        (DJ @{ tool='diag'; rev=0x3104; cfdb=$(if ($green) {3} else {0}); usb_misc_0=0x1000; usb_misc_1=0; linux_variant='AD'
+               chip=@{ name='RTL8156BG (type 0x4102)'; type=0x4102; variant=0x502; protocol='type 2 (dword)'; new_chip=$false }
+               dll=@{ family='Direct_API'; version='5.0.0.2'; exports=216; path='dll\new\RtlDirectDiagLib64.dll' }
+               layers=@{ Windows=@{ ok=$green; why=$aux }; PXE=@{ ok=$green; why=$pxe }; Linux=@{ ok=$green; why=$lin } }
+               storage=@{ dc00=0; jedec='00 00 00'; text='efuse (one-time) - no external memory found; EEPROM not probed' } })) -join "`r`n")
     }
     'settings.py' {
       if ($g -eq 'plain') {
@@ -137,8 +149,12 @@ function Demo-Py($script, $argline) {
     'efuse.py' {
       $plan = @("append point (dword-aligned): 0x18 (dwaddr 0x6)","current dword @0x18 = 0xFFFFFFFF",
         "record to write: 40 CF DB 03  (0xCFDB = 0x03)","dword to write @0x18: 0x03DBCF40","after burn 0x18..0x1B = 40 CF DB 03, then 0x1C=0xFF (0xFF=EOL)")
-      if ($argline -like '*--burn*') { return (($plan + "=== BURN (irreversible) ===" + "read-back @0x18 = 0x03DBCF40" + "RESULT: OK, matches") -join "`r`n") }
-      return (($plan + "=== DRY RUN: nothing written. Add --burn to write. ===") -join "`r`n")
+      $ej = @{ tool='efuse'; result='ready'; plan=@{ at=0x18; dwaddr=6; current=0xFFFFFFFF; dword=0x03DBCF40; record='40 CF DB 03'; free=$true; gap=$false } }
+      if ($argline -like '*--burn*') {
+        $ej.result = 'ok'; $ej.read_back = 0x03DBCF40
+        return (($plan + "=== BURN (irreversible) ===" + "read-back @0x18 = 0x03DBCF40" + "RESULT: OK, matches" + (DJ $ej)) -join "`r`n")
+      }
+      return (($plan + "=== DRY RUN: nothing written. Add --burn to write. ===" + (DJ $ej)) -join "`r`n")
     }
   }
   return ''
@@ -179,22 +195,33 @@ function Run-Py($script, $argline) {
 function Rx($text, $pattern) { $m = [regex]::Match($text, $pattern); if ($m.Success) { $m.Groups[1].Value.Trim() } else { '' } }
 
 # ---------- reading diag.py ----------
+# The tools print human text, then (with --json) one last line "JSON {...}". Only that line is read here -
+# by field name - so the wording of the human text can change without breaking the window.
+function Get-Json($out) {
+  $line = @(($out -split "`r?`n") | Where-Object { $_ -like 'JSON {*' }) | Select-Object -Last 1
+  if (-not $line) { return $null }
+  try { return ($line.Substring(5) | ConvertFrom-Json) } catch { return $null }
+}
+# demo: the JSON line a tool would print, from a hashtable
+function DJ($h) { 'JSON ' + (ConvertTo-Json $h -Compress -Depth 6) }
+function Hex($n, $w) { if ($null -eq $n) { '' } else { '0x' + ([int64]$n).ToString("X$w") } }
+
 function Parse-Diag($dr) {
   $d = [ordered]@{ Raw=$dr; Ok=$false }
-  $cfhex = Rx $dr '0xCFDB\s+EFUSE[^=]*=\s*(0x[0-9A-Fa-f]+)'
-  if (-not $cfhex) { return $d }
-  $d.Ok = $true; $d.CfdbHex = $cfhex; $d.Cf = [Convert]::ToInt32($cfhex,16)
+  $j = Get-Json $dr
+  if (-not $j -or $j.tool -ne 'diag') { return $d }
+  $d.Ok = $true; $d.Cf = [int]$j.cfdb; $d.CfdbHex = Hex $j.cfdb 2
   $d.Bit0 = $d.Cf -band 1; $d.Bit1 = ($d.Cf -shr 1) -band 1
-  $d.Rev = Rx $dr 'bcdDevice\(REV\)\s*=\s*(0x[0-9A-Fa-f]+)'
-  $d.Chip = Rx $dr '(?m)^CHIP = (.+?), efuse protocol'; $d.Proto = Rx $dr 'efuse protocol = (.+)'
-  $d.M0  = Rx $dr '0xD81A\s+USB_MISC_0\s*=\s*(0x[0-9A-Fa-f]+)'
-  $d.M1  = Rx $dr '0xD81F\s+USB_MISC_1\s*=\s*(0x[0-9A-Fa-f]+)'
-  $d.Variant = Rx $dr 'chip variant \(r8152\)\s*=\s*(\S+)'
-  $d.Storage = Rx $dr 'CONFIG STORAGE\s*=\s*(.+)'; if (-not $d.Storage) { $d.Storage = 'not reported' }
-  $d.Dll = Rx $dr '(?m)^DLL\s+(.+?)\s{2}'
+  $d.Rev = Hex $j.rev 4
+  $d.Chip = $j.chip.name; $d.Proto = $(if ($j.chip.protocol) { $j.chip.protocol } else { 'unknown' })
+  $d.M0 = Hex $j.usb_misc_0 4; $d.M1 = Hex $j.usb_misc_1 2
+  $d.Variant = $(if ($j.linux_variant) { $j.linux_variant } else { 'none' })
+  $d.Storage = $(if ($j.storage.text) { $j.storage.text } else { 'not reported' })
+  $d.Dll = "$($j.dll.family) v$($j.dll.version) ($($j.dll.exports) procedures)"
   $d.Layers = [ordered]@{}
-  foreach ($mm in [regex]::Matches($dr,'PASSTHRU\s+(\w+)\s*=\s*(YES|NO|\?)\s+\((.*)\)')) {
-    $d.Layers[$mm.Groups[1].Value] = @{ Val=$mm.Groups[2].Value; Why=$mm.Groups[3].Value }
+  foreach ($k in 'Windows','PXE','Linux') {
+    $L = $j.layers.$k
+    $d.Layers[$k] = @{ Val = $(if ($L.ok -eq $true) { 'YES' } elseif ($L.ok -eq $false) { 'NO' } else { '?' }); Why = $L.why }
   }
   return $d
 }
@@ -485,7 +512,7 @@ function Read-Card {
   foreach ($k in $script:tiles.Keys) { Set-Tile $k '...' 'reading' }
   Show-Action 'reading'; $lblStore.Text = ''; Set-Status 'Reading the card...'
   Set-Busy $true
-  try { $d = Parse-Diag (Run-Py 'diag.py' "`"$($c.Guid)`" --dll $(Sel-Dll)") } finally { Set-Busy $false }
+  try { $d = Parse-Diag (Run-Py 'diag.py' "`"$($c.Guid)`" --json --dll $(Sel-Dll)") } finally { Set-Busy $false }
   $d.Guid = $c.Guid; $d.Card = $c
   $script:rpt = $d
   if (-not $d.Ok) {
@@ -519,15 +546,16 @@ function Preview {
   Show-Progress 'Checking the efuse...'
   try {
     if ($script:action -eq 'burn') {
-      $out = Run-Py 'efuse.py' "`"$($d.Guid)`" --plan --dll $(Sel-Dll)"
-      $cur = Rx $out '@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})'
-      $rng = Rx $out '(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ ='
-      if ($out -match 'EFUSE UNAVAILABLE') {
+      $j = Get-Json (Run-Py 'efuse.py' "`"$($d.Guid)`" --plan --json --dll $(Sel-Dll)")
+      $res = if ($j) { $j.result } else { '' }
+      if ($res -eq 'unavailable') {
         Set-Result 'err' 'Can''t burn this chip  -  nothing written' 'Its efuse does not use the dword protocol of the RTL8156 family, the only one this tool writes.'
-      } elseif ($cur -eq '0xFFFFFFFF' -and $rng) {
+      } elseif ($res -eq 'ready') {
         $script:previewOk = $true
-        Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record 40 CF DB 03  at efuse offset $rng   " + [char]0x00B7 + '   free slot, factory data untouched')
+        Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record $($j.plan.record)  at efuse offset $(Hex $j.plan.at 2)   " + [char]0x00B7 + '   free slot, factory data untouched')
         Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $true
+      } elseif ($res -eq 'gap') {
+        Set-Result 'err' 'Can''t burn  -  nothing written' 'The records on this card end mid-block; a record there would never load. Details shows the efuse.'
       } else {
         Set-Result 'err' 'Can''t burn  -  nothing written' 'No free efuse slot was found, or the read failed. Details shows the efuse.'
       }
@@ -538,9 +566,9 @@ function Preview {
 function Burn-Card {
   $d = $script:rpt; if (-not $d -or -not $script:previewOk) { return }
   Set-Busy $true; Show-Progress 'Checking the efuse again...'
-  try { $out = Run-Py 'efuse.py' "`"$($d.Guid)`" --plan --dll $(Sel-Dll)" } finally { Hide-Progress; Set-Busy $false }   # re-check right before burning
-  $cur = Rx $out '@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})'; $dwd = Rx $out '@0x[0-9A-Fa-f]+: (0x[0-9A-Fa-f]{8})'; $rng = Rx $out '(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ ='
-  if ($cur -ne '0xFFFFFFFF' -or -not $dwd) {
+  try { $j = Get-Json (Run-Py 'efuse.py' "`"$($d.Guid)`" --plan --json --dll $(Sel-Dll)") } finally { Hide-Progress; Set-Busy $false }   # re-check right before burning
+  $dwd = if ($j -and $j.plan) { [int64]$j.plan.dword } else { $null }; $rng = if ($j -and $j.plan) { Hex $j.plan.at 2 } else { '' }
+  if (-not $j -or $j.result -ne 'ready' -or $null -eq $dwd) {
     Set-Result 'err' 'Not burned' 'The free slot could not be confirmed again. Run Preview.'
     Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $false; return
   }
@@ -551,9 +579,9 @@ function Burn-Card {
   Set-Busy $true; Set-Btn $btnA1 '1   Preview' 'outline' $false; Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $false
   Set-Status 'Burning - do not unplug the card...' $C_RED
   Show-Progress 'Burning the AUX bit - do not unplug the card...' $true
-  try { $out = Run-Py 'efuse.py' "`"$($d.Guid)`" --burn --dll $(Sel-Dll)" } finally { Hide-Progress; Set-Busy $false }
-  $back = Rx $out 'read-back @0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})'
-  if ($back -and $back -eq $dwd) {
+  try { $j = Get-Json (Run-Py 'efuse.py' "`"$($d.Guid)`" --burn --json --dll $(Sel-Dll)") } finally { Hide-Progress; Set-Busy $false }
+  $back = if ($j -and $null -ne $j.read_back) { Hex $j.read_back 8 } else { '' }
+  if ($j -and $j.result -eq 'ok' -and [int64]$j.read_back -eq $dwd) {
     Set-Result 'ok' 'Burned and verified' 'Unplug and re-plug the card so it reloads its efuse, then press Rescan.'
     Set-Status 'Burn verified. Re-plug the card, then Rescan.' $C_GREEN
     [Windows.Forms.MessageBox]::Show("Burned and verified.`n`nUnplug and re-plug the card so it loads the new setting, then press Rescan.", 'Done', 'OK', 'Information') | Out-Null

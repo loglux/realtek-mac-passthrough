@@ -68,7 +68,7 @@ def verdict(usb_misc_0: int, usb_misc_1: int, cfdb: int, vid: int = 0x0BDA) -> d
 
 
 def format_lines(result: dict) -> list:
-    """Stable text lines for diag.py; the GUI parses them by regex."""
+    """Text lines for diag.py (for people; the GUI reads the JSON line instead)."""
     v = result["variant"] or "none"
     out = [f"  chip variant (r8152) = {v}"]
     for layer in LAYERS:
