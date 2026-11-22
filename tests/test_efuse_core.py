@@ -95,9 +95,109 @@ def test_pg_stamp():
     # WAVLINK RTL8156BG: Realtek's tool reported "Nic PG version = 2.19", "Nic CFG version = 1028" for 13 02 04 04.
     assert ec.describe_pg_stamp(bytes.fromhex("13020404")) == "PG tool 2.19, CFG 1028"
     # The burned RTL8156 dongle (ETH6_EFUSE above) carries 0F 02 01 04.
-    stamp = next(r for r in ec.parse_autoload_records(ETH6_EFUSE) if r["reg"] == ec.PG_STAMP_REG)
+    stamp = next(r for r in ec.parse_autoload_records(ETH6_EFUSE) if r["reg"] in ec.PG_STAMP_REGS)
     assert ec.describe_pg_stamp(stamp["data"]) == "PG tool 2.15, CFG 1025"
     assert ec.describe_pg_stamp(b"\x01") == ""
+def _cell_as_read(waddr, dword):
+    """What a read of `waddr` returns after `dword` was programmed: the 17-bit cell + the address echo."""
+    cell_lo, cell_b16 = dword & 0xFFFF, (dword >> 23) & 1
+    return ((waddr & 0x7F) | (cell_b16 << 7)) << 16 | cell_lo
+
+
+def test_efuse8153_encode_decode_round_trip():
+    for waddr in range(0x80):
+        for word in (0x0000, 0xFFFF, 0x1234, 0xA55A, 0x00FF, 0xFF00, 0x8001, 0xFF41, 0xD8FF, 0x00FF):
+            assert ec.efuse8153_decode_read(_cell_as_read(waddr, ec.efuse8153_encode_write(waddr, word))) == word
+
+
+def test_efuse8153_known_commands():
+    # The exact 0xDD00 dwords the -AD marker burn sends (checked against the dry run on a real RTL8153).
+    assert ec.efuse8153_encode_write(0x00, ec.efuse8153_write_word(0x01, 0xFF, 0xD8)) == 0x4080B1FF
+    assert ec.efuse8153_encode_write(0x01, ec.efuse8153_write_word(0x02, 0xFF, 0x1A)) == 0x4081FE36
+    assert ec.efuse8153_encode_write(0x01, ec.efuse8153_write_word(0x03, 0xFF, 0x00)) == 0x400101FF
+    assert ec.efuse8153_encode_write(0x02, ec.efuse8153_write_word(0x04, 0xFF, 0x10)) == 0x4082FE24
+    assert ec.efuse8153_encode_write(0x00, ec.efuse8153_write_word(0x00, 0xFF, 0x41)) == 0x4080FE83
+
+
+def test_efuse8153_blank_reads_ff():
+    # A blank cell reads back 0xFFFF on a real UGREEN (raw dword 0x00..FFFF, bit16 = 1 in hi bit 7).
+    assert ec.efuse8153_decode_read(0x0080FFFF) == 0xFFFF
+    assert ec.efuse8153_decode_read(0x00DFFFFF) == 0xFFFF
+
+
+UGREEN_EFUSE = bytes.fromhex(   # real efuse of a plain RTL8153B (type 0x3106), read by Realtek's tool and by ours
+    "40 cc 24 20 25 c0 00 ec 1a c3 12 34 ad 20 e8 22"
+    "08 23 e8 18 18 02 05 04") + b"\xff" * (0xD0 - 0x19) + b"\xfe"
+
+
+def test_chip_identification_real_cards():
+    # UGREEN: 0xE612 = 0x6310, 0xCD14 = 0x12, USB_MISC_0 = 0, 0xD81E = 0x4000 -> type 0x3106, variant 0x220
+    # = "RTL8153UG" in Realtek's tool 2.0.30 (2.0.19 did not know 0x4000 and called it a new chip)
+    assert ec.chip_type(0x6310, cd14=0x12) == (0x3106, False)
+    assert ec.chip_variant(0x3106, 0x0000, 0x4000) == (0x220, False)
+    assert ec.chip_name(0x3106, 0x220) == "RTL8153UG (type 0x3106)"
+    assert ec.efuse_protocol(0x3106) == (ec.EFUSE_V3, 0xD0)
+    # WAVLINK: 0xE612 = 0x7410, USB_MISC_0 = 0x1000 -> type 0x4102, variant 0x502 = "RTL8156BG" (both tools agree)
+    assert ec.chip_type(0x7410) == (0x4102, False)
+    assert ec.chip_variant(0x4102, 0x1000, 0x0000) == (0x502, False)
+    assert ec.variant_name(0x502) == "RTL8156BG"
+    assert ec.efuse_protocol(0x4102) == (ec.EFUSE_DWORD, 0x510)
+
+
+def test_chip_type_revisions():
+    t = lambda e612, cd14=0, **kw: ec.chip_type(e612, cd14=cd14, **kw)[0]   # noqa: E731
+    assert t(0x6000) == 0x3101
+    assert [t(0x6010, x) for x in (0x00, 0x01, 0x11, 0x02, 0x12)] == [0x3102, 0x3103, 0x3104, 0x3105, 0x3106]
+    assert ec.chip_type(0x6010, cd14=0x03) == (0x3106, True)          # outside the table: flagged, like Realtek
+    assert ec.chip_type(0x6020)[1] is True
+    assert [t(0x6400, x) for x in (0x00, 0x01, 0x11, 0x02, 0x12)] == [0x3201, 0x3202, 0x3203, 0x3204, 0x3205]
+    assert [t(0x5C00), t(0x5C10), t(0x5C20), t(0x5C30), t(0x5C30, 1)] == [0x3001, 0x3002, 0x3003, 0x3004, 0x3005]
+    assert [t(0x7020), t(0x7030), t(0x7030, dc48=6)] == [0x4001, 0x4002, 0x4003]
+    assert [t(0x7400), t(0x7410), t(0x7420)] == [0x4101, 0x4102, 0x4103]
+    assert [t(0x1020), t(0x1030), t(0x2010), t(0x2020)] == [0x5001, 0x5002, 0x6001, 0x6002]   # RTL8157 / RTL8159
+    assert [t(0x4800), t(0x4C00), t(0x4C10)] == [0x1001, 0x2001, 0x2002]
+    assert ec.chip_type(0x0800) == (0, True)
+    assert ec.efuse_protocol(0x3102)[0] == ec.EFUSE_OLD and ec.efuse_protocol(0x3104)[0] == ec.EFUSE_DWORD
+    assert ec.efuse_protocol(0x5001)[0] == ec.EFUSE_DWORD and ec.efuse_protocol(0) == (None, 0)
+
+
+def test_chip_variants():
+    assert ec.chip_variant(0x3102, 0x1000, 0) == (0x207, False) and ec.variant_name(0x207) == "RTL8158vA"
+    assert ec.chip_variant(0x3102, 0, 0x0400) == (0x206, False) and ec.variant_name(0x206) == "RTL8153BND"
+    assert ec.chip_variant(0x3004, 0x1000, 0) == (0x10A, False) and ec.variant_name(0x10A) == "RTL8153ADvB"
+    assert ec.chip_variant(0x3106, 0, 0) == (0x216, False) and ec.variant_name(0x216) == "RTL8153E"
+    assert ec.chip_variant(0x3106, 0, 0x2000) == (0x216, True)            # unknown USB_MISC_1 -> new chip
+    assert ec.chip_variant(0x4102, 0x1000, 0x0200) == (0x508, False) and ec.variant_name(0x508) == "RTL8156BGH"
+    assert ec.chip_variant(0x5001, 0, 0) == (0xA01, False) and ec.variant_name(0xA01) == "RTL8157"
+    assert ec.chip_name(0x3106, 0x216, True) == "RTL8153E (type 0x3106, a revision not in Realtek's tables)"
+
+def test_record_dword_writes():
+    rec = bytes.fromhex("41d81a0010")
+    # aligned start: two dwords, the header dword last
+    area = b"\xff" * 16
+    w = ec.record_dword_writes(area, 4, rec)
+    assert [(d, f"{o:08X}", f"{n:08X}") for d, o, n in w] == [(2, "FFFFFFFF", "FFFFFF10"), (1, "FFFFFFFF", "001AD841")]
+    # records end mid-dword at 0x06: bytes 4..5 (AA BB) are kept, the record starts at 6 with no FF gap
+    #   dword 1 (bytes 4..7) = AA BB 41 D8 -> 0xD841BBAA (header, last); dword 2 (bytes 8..11) = 1A 00 10 FF
+    area = bytes.fromhex("40cfdb03aabb") + b"\xff" * 10
+    w = ec.record_dword_writes(area, 6, rec)
+    assert w == [(2, 0xFFFFFFFF, 0xFF10001A), (1, 0xFFFFBBAA, 0xD841BBAA)]
+
+
+def test_v3_write_command():
+    # the AD marker 41 D8 1A 00 10 at 0x18 on a blank V3 area: byte 0x19 = D8 -> odd -> D8 << 8 | 0xFF
+    assert ec.efuse_v3_write_command(0x19, ec.efuse8153_write_word(0x19, 0xFF, 0xD8)) == 0x400CD8FF
+    assert ec.efuse_v3_write_command(0x18, ec.efuse8153_write_word(0x18, 0xFF, 0x41)) == 0x400CFF41
+    # the read command for the same byte differs only in the top bits (bit31 = read, bit30 = write)
+    assert ec.efuse_v3_write_command(0x18, 0) & 0x00FF0000 == (0x80000000 | (0x18 << 15)) & 0x00FF0000
+
+
+def test_ugreen_records_and_stamp():
+    recs = ec.parse_autoload_records(UGREEN_EFUSE)
+    assert [(r["at"], r["reg"]) for r in recs] == [(0x00, 0xCC24), (0x04, 0xC000), (0x0D, 0xE822), (0x11, 0xE818)]
+    assert recs[1]["data"] == bytes.fromhex("ec1ac31234ad")
+    assert ec.describe_pg_stamp(recs[3]["data"]) == "PG tool 2.24, CFG 1029"    # Realtek's tool: V2.24(1.029)
+    assert ec.find_append_point(UGREEN_EFUSE[:-1])["append"] == 0x18            # a new record goes after these
 
 
 def test_parse_records_unknown_type_stops():

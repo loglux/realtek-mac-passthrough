@@ -3,8 +3,8 @@
 Usage:  python -I settings.py {InterfaceGUID} [--dll new|old|auto]
 
 The chip applies its settings at power-on from its efuse (one-time programmable) or an external EEPROM
-(RTL8153 datasheet 6.4). This tool dumps the efuse with its decoded autoload records - trying the RTL8156
-protocol first, then the RTL8153 one - and shows the start of an SPI flash if the card has one; that
+(RTL8153 datasheet 6.4). This tool works out the chip type as Realtek's own tool does (PLA 0xE612, USB 0xCD14),
+dumps the efuse with that type's protocol and its decoded autoload records, and shows the start of an SPI flash if the card has one; that
 flash holds the driver install disk, not chip settings. A controller that does not answer is reported,
 never hung on.
 The output format is stable - the GUI shows it as is.
@@ -14,14 +14,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import PG_STAMP_REG, describe_pg_stamp, parse_autoload_records
+from efuse_core import EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, describe_pg_stamp, parse_autoload_records
 from rtldiag import EfuseUnavailable, RtlDiag
 from storage import flash_name, has_flash
 
 NAMES = {0xC000: "MAC address", 0xCFDB: "SW_FEATURE - MAC clone / pass-through bits",
          0xD81A: "USB_MISC_0 - chip variant (AD marker)", 0xD81F: "USB_MISC_1 - chip variant (BD/BND)"}
 EFUSE_BYTES = 2048      # the whole efuse address space of the dword protocol (9-bit dword address)
-EFUSE8153_BYTES = 256   # the whole address space of the older protocol (7-bit word address)
 FLASH_BYTES = 256       # only the start of the flash is shown (header of the driver install disk)
 
 
@@ -64,7 +63,7 @@ def _records(recs):
         dhex = " ".join(f"{b:02X}" for b in r["data"])
         if r["kind"] == "reg":
             nm = NAMES.get(r["reg"], "")
-            if r["reg"] == PG_STAMP_REG and describe_pg_stamp(r["data"]):
+            if r["reg"] in PG_STAMP_REGS and describe_pg_stamp(r["data"]):
                 nm = "programmed with " + describe_pg_stamp(r["data"])
             print(f"  0x{r['at']:03X}: write [{dhex}] -> reg 0x{r['reg']:04X}" + (f"  ({nm})" if nm else ""))
         elif r["kind"] == "raw":
@@ -76,18 +75,29 @@ def _records(recs):
         print(f"  => 0xCFDB ends up as 0x{regs[0xCFDB][-1]:02X} (the last record wins)")
 
 
-def _summary(recs, data, start, store):
-    """Plain-language reading of a dump: what is records, what is empty space."""
+def _summary(recs, data, start, store, counter_at=None):
+    """Plain-language reading of a dump: what is records, what is empty space, and the write counter (the last
+    byte of the efuse area: Realtek's tool burns one bit of it per programming session)."""
     end = recs[-1]["at"] + recs[-1]["size"] if recs else start
     print("in plain words:")
     if recs:
         print(f"  0x{start:03X}-0x{end - 1:03X}  {len(recs)} setting record(s), listed above; the chip applies them at power-on")
     else:
         print(f"  no setting records at all - the chip takes nothing from its {store} and runs on its factory defaults")
-    others = _ranges(data, end)
+    counted = counter_at is not None and end <= counter_at < len(data)
+    scan = bytearray(data)
+    if counted:
+        scan[counter_at] = 0xFF
+    others = _ranges(bytes(scan), end)
     free_to = (others[0][0] if others else len(data)) - 1
+    if counted:
+        free_to = min(free_to, counter_at - 1)
     if end <= free_to:
         print(f"  0x{end:03X}-0x{free_to:03X}  all FF = empty: never written ({free_to - end + 1} bytes free; FF is the blank state)")
+    if counted:
+        n = 8 - bin(data[counter_at]).count("1")
+        print(f"  0x{counter_at:03X}        {data[counter_at]:02X} = write counter: {n} programming session(s) by Realtek's tool "
+              "(one bit burned per session)")
     for a, b in others:
         print(f"  0x{a:03X}-0x{b:03X}  other data - not setting records (the records end at the first FF), not decoded")
     regs = {r["reg"] for r in recs if r["kind"] == "reg"}
@@ -107,27 +117,32 @@ def main(argv):
     try:
         print(f"GUID {guid}  (DLL: {c.family} v{c.version}, {c.exports} procedures)")
 
-        efuse, proto = None, ""
-        c.pg_enter()
-        c.efuse_enable()
-        try:
-            efuse, proto = c.efuse_dump(EFUSE_BYTES), "RTL8156 protocol"
-        except EfuseUnavailable:
-            pass
-        finally:
-            c.efuse_disable()
-        if efuse is None:                       # older family (RTL8153): the other protocol, read only
-            try:
-                efuse, proto = c.efuse8153_dump(EFUSE8153_BYTES), "RTL8153 protocol"
-            except EfuseUnavailable:
-                pass
-        c.pg_leave()
-
         _, jedec = c.flash_id()
         flash = c.flash_read(0, FLASH_BYTES) if has_flash(jedec) else None
 
+        info = c.chip_info()
+        kind, size = info["protocol"], info["size"]
+        print(f"CHIP {info['name']}")
+        efuse, proto = None, ""
+        c.pg_enter()
+        try:
+            if kind == EFUSE_DWORD:
+                c.efuse_enable()
+                try:
+                    efuse, proto = c.efuse_dump(EFUSE_BYTES), EFUSE_DWORD + " protocol"
+                finally:
+                    c.efuse_disable()
+            elif kind == EFUSE_V3:
+                efuse, proto = c.efuse_v3_dump(size), EFUSE_V3 + " protocol"
+            elif kind == EFUSE_OLD:
+                efuse, proto = c.efuse8153_dump(size), EFUSE_OLD + " protocol"
+        except EfuseUnavailable:
+            efuse = None
+        finally:
+            c.pg_leave()
+
         print("STORAGE efuse = " + (f"responding ({proto})" if efuse is not None else
-              "could not be read - the efuse controller answered neither protocol this tool knows"))
+              "could not be read - chip type not known to this tool, or the controller did not answer"))
         print("STORAGE flash = " + (f"{flash_name(jedec)} - holds the driver install disk, not chip settings"
                                     if flash is not None else "none"))
 
@@ -137,7 +152,7 @@ def main(argv):
             print("records:")
             recs = parse_autoload_records(efuse)
             _records(recs)
-            _summary(recs, efuse, 0, "efuse")
+            _summary(recs, efuse, 0, "efuse", counter_at=size - 1 if size else None)
         else:
             print("\nThe settings this chip applies at power-on live in its efuse, which could not be read here.")
         if flash is not None:

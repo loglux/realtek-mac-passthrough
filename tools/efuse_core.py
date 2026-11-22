@@ -69,7 +69,216 @@ def find_append_point(data: bytes) -> dict:
     }
 
 
-PG_STAMP_REG = 0xD3A0   # Realtek's programming tool leaves its own version and its CFG version here
+# --- Chip identification, ported from Realtek's programming tool 2.0.30 (2.0.19 agrees where it knows the chip) ---
+# Three steps, each reading only registers (see notes/realtek-config-map.md):
+#   1. type     PLA 0xE612 & 0x7CF0 names the family (top bits) and its revision (bits 7..4); some families are
+#               refined by one more register (USB 0xCD14 on RTL8153/8153B/8153C, PLA 0xDC48 on the first RTL8156)
+#   2. variant  from the type and the chip-variant registers (USB_MISC_0 0xD81A, USB_MISC_1 0xD81E; the RTL8152
+#               family uses PLA 0xDC00 bit3, USB 0xC340 bit0 and USB 0xC2AC instead)
+#   3. name     Realtek's own name for the variant code ("RTL8153UG", "RTL8156BG", ...)
+# A combination the tool has no entry for is flagged "new chip": Realtek's tool refuses such a card unless run
+# with /newchip, and so do our writers.
+
+def chip_type(e612: int, cd14: int = 0, dc48: int = 0, d8a0: int = 0):
+    """(type, new_chip) - Realtek's internal chip type (e.g. 0x3106, 0 if the family is unknown) and whether
+    this revision is outside Realtek's tables. e612 = PLA 0xE612, cd14 = USB 0xCD14, dc48 = PLA 0xDC48,
+    d8a0 = USB 0xD8A0 (the last three only matter for some families)."""
+    fam, rev = e612 & 0x7C00, e612 & 0xF0
+    new = False
+    if fam == 0x4C00:                                    # RTL8152
+        t = 0x2001 if rev == 0 else 0x2002
+        new = rev not in (0, 0x10)
+    elif fam == 0x4800:                                  # RTL8152
+        t, new = 0x1001, rev != 0
+    elif fam == 0x5C00:                                  # RTL8153
+        t = {0: 0x3001, 0x10: 0x3002, 0x20: 0x3003}.get(rev, 0x3004)
+        new = rev not in (0, 0x10, 0x20, 0x30)
+        if cd14 not in (0, 1):
+            new = True
+        if t == 0x3004 and cd14 == 1:
+            t = 0x3005
+    elif fam in (0x6000, 0x6400):                        # RTL8153B / RTL8153C
+        base = 0x3101 if fam == 0x6000 else 0x3201
+        if fam == 0x6000 and rev != 0:
+            base, new = 0x3102, rev != 0x10
+        if fam == 0x6400:
+            new = rev != 0
+        lo, hi = cd14 & 0xF, cd14 >> 4
+        t = base
+        if base == 0x3201 and cd14 != 0:
+            new = True                                   # 2.0.30 flags any 0xCD14 on 0x3201, yet still refines it
+        if fam == 0x6000 and base == 0x3102 and lo > 2:
+            new = True
+        if base in (0x3102, 0x3201) and cd14 != 0:
+            if lo in (1, 2) and hi in (0, 1):
+                t = base + (lo - 1) * 2 + hi + 1         # 1/0 -> +1, 1/1 -> +2, 2/0 -> +3, 2/1 -> +4
+            else:
+                t, new = base + 4, True
+    elif fam == 0x7000:                                  # RTL8156
+        if rev == 0x20:
+            t = 0x4001
+        elif rev == 0x30:
+            t = 0x4003 if ((dc48 >> 1) & 7) == 3 else 0x4002
+        else:
+            t, new = 0x4002, True
+    elif fam == 0x7400:                                  # RTL8156B
+        t = {0: 0x4101, 0x10: 0x4102}.get(rev, 0x4103)
+        new = rev not in (0, 0x10, 0x20) or d8a0 > 2
+    elif fam == 0x1000:                                  # RTL8157
+        t, new = (0x5001, False) if rev == 0x20 else (0x5002, rev != 0x30)
+        new = new or d8a0 > 1
+    elif fam == 0x2000:                                  # RTL8159
+        t, new = (0x6001, False) if rev == 0x10 else (0x6002, rev != 0x20)
+        new = new or d8a0 > 1
+    else:
+        return 0, True
+    return t, new
+
+
+def chip_variant(ctype: int, misc0: int, d81e: int, dc00: int = 0, c340: int = 0, c2ac: int = 0):
+    """(variant code, new_chip) - Realtek's variant code for a chip type (0 = none). misc0 = USB 0xD81A,
+    d81e = USB 0xD81E (USB_MISC_1 in its high byte); dc00 / c340 / c2ac only for the RTL8152 family."""
+    m0, m1 = misc0 & 0xFEF0, d81e & 0xFF00
+    if ctype in (0x1001, 0x2001, 0x2002, 0x2003):         # RTL8152 family
+        v8, b0, mk = dc00 & 8, c340 & 1, c2ac & 0xFEE0
+        if ctype == 0x1001:
+            return 5, bool(mk or b0)
+        if ctype == 0x2003:
+            return 0x11, mk != 0x3000
+        if mk == 0x3000:
+            return 6, False
+        if mk:
+            return 1, True
+        return (b0 * 2 + 1 if v8 else (4 if b0 else 2)), False
+    if ctype in (0x3001, 0x3002):
+        return 0x101, m0 != 0
+    if ctype == 0x3003:
+        return {0x10: 0x103, 0x200: 0x104, 0x1000: 0x105}.get(m0, 0x102), m0 not in (0, 0x10, 0x200, 0x1000)
+    if ctype == 0x3004:
+        v = {0x10: 0x109, 0x200: 0x108, 0x1000: 0x10A, 0x2000: 0x10B}.get(m0, 0x107)
+        return v, m0 not in (0, 0x10, 0x200, 0x1000, 0x2000)
+    if ctype == 0x3005:
+        if m0 == 0 and m1 in (0, 0x200):
+            return (0x110 if m1 == 0x200 else 0x10C), False
+        return 0x10C, True
+    if ctype == 0x3101:
+        return 0x201, bool(m0 or m1)
+    if ctype == 0x3102:
+        if m0 & 0x7000:
+            if m0 == 0x1000 and m1 in (0, 0x200):
+                return (0x208 if m1 else 0x207), False
+            return 0x209, True
+        if m0 == 0x10:
+            return (0x203, False) if m1 == 0 else (0x202, True)
+        if m0 == 0:
+            v = {0x100: 0x204, 0x200: 0x205, 0x400: 0x206, 0x800: 0x20B, 0: 0x202}.get(m1)
+            return (v, False) if v else (0x202, True)
+        return (0x20A, False) if (m0 == 0x200 and m1 == 0) else (0x202, True)
+    if ctype in (0x3103, 0x3104):
+        if m0 == 0x200:
+            return (0x214, False) if m1 == 0 else (0x20C, True)
+        if m0:
+            return 0x20C, True
+        v = {0x100: 0x20E, 0x400: 0x210, 0x800: 0x215, 0: 0x20C}.get(m1)
+        return (v, False) if v else (0x20C, True)
+    if ctype in (0x3105, 0x3106):
+        if m0 == 0x200:
+            return (0x21E, False) if m1 == 0 else (0x216, True)
+        if m0:
+            return 0x216, True
+        v = {0x100: 0x218, 0x400: 0x21A, 0x800: 0x21F, 0x4000: 0x220}.get(m1)
+        if v:
+            return v, False
+        return 0x216, (m1 & 0xEFFF) != 0
+    if ctype == 0x3201:
+        if m0 == 0:
+            return (0x804, False) if m1 == 0x200 else (0x801, m1 != 0)
+        return (0x805, False) if (m0 == 0x200 and m1 == 0) else (0x801, True)
+    if ctype in (0x3202, 0x3203):
+        if m0 == 0 and m1 in (0, 0x200):
+            return (0x80A if m1 else 0x807), False
+        return 0x807, True
+    if ctype in (0x3204, 0x3205):
+        if m0 == 0 and m1 in (0, 0x200):
+            return (0x810 if m1 else 0x80D), False
+        return 0x80D, True
+    if ctype in (0x4001, 0x4002):
+        if m0 == 0:
+            return {0x8000: (0x403, False), 0: (0x401, False)}.get(m1, (0x401, True))
+        return (0x402, False) if (m0 == 0x1000 and m1 == 0) else (0x401, True)
+    if ctype == 0x4003:
+        return 0x404, bool(m0 or m1)
+    if ctype in (0x4101, 0x4102):
+        if m0 == 0:
+            v = {0: 0x501, 0x8000: 0x503, 0x100: 0x505, 0x200: 0x506, 0x800: 0x507}.get(m1)
+            return (v, False) if v else (0x501, True)
+        if m0 == 0x1000:
+            v = {0: 0x502, 0x200: 0x508}.get(m1)
+            return (v, False) if v else (0x501, True)
+        return (0x504, False) if (m0 == 0x10 and m1 == 0) else (0x501, True)
+    if ctype == 0x4103:
+        if m0 == 0 and m1 in (0, 0x100):
+            return (0x903 if m1 else 0x901), False
+        return 0x901, True
+    if ctype in (0x5001, 0x5002):
+        return 0xA01, bool(m0 or (d81e & 0xEF00))
+    if ctype in (0x6001, 0x6002):
+        return 0xB01, bool(m0 or m1)
+    return 0, True
+
+
+_NAMES = {
+    1: "RTL8152B", 2: "RTL8152BN", 3: "RTL8152BM", 4: "RTL8152BNM", 5: "RTL8150B", 6: "RTL8152BPU", 0x11: "RTL8152BPUvB",
+    0x101: "RTL8153vA", 0x102: "RTL8153vBSeries", 0x103: "RTL8153AM", 0x104: "RTL8154vA", 0x105: "RTL8153AD",
+    0x106: "RTL8153AH", 0x107: "RTL8153vC", 0x108: "RTL8154vB", 0x109: "RTL8153AMvB", 0x10A: "RTL8153ADvB",
+    0x10B: "RTL8153AHvB", 0x10C: "RTL8153vD", 0x110: "RTL8153vD",
+    0x201: "RTL8153BvA", 0x202: "RTL8153BvB", 0x203: "RTL8153BM", 0x204: "RTL8153BDvA", 0x205: "RTL8153BHvA",
+    0x206: "RTL8153BND", 0x207: "RTL8158vA", 0x208: "RTL8158AHvA", 0x209: "RTL8158vASeries", 0x20A: "RTL8154BvB",
+    0x20B: "RTL8153BLvA", 0x20C: "RTL8153BvC", 0x20E: "RTL8153BDvB", 0x210: "RTL8153BNDvB", 0x214: "RTL8154BvC",
+    0x215: "RTL8153BLvB", 0x216: "RTL8153E", 0x218: "RTL8153BvC", 0x21A: "RTL8153BvC", 0x21E: "RTL8154BvC",
+    0x21F: "RTL8153BvC", 0x220: "RTL8153UG",
+    0x401: "RTL8156", 0x402: "RTL8156AG", 0x403: "RTL8156AP", 0x404: "RTL8156AP",
+    0x501: "RTL8156B", 0x502: "RTL8156BG", 0x503: "RTL8156BM", 0x504: "RTL8156BM", 0x505: "RTL8156BD",
+    0x506: "RTL8156BL", 0x507: "RTL8156BL", 0x508: "RTL8156BGH",
+    0x801: "RTL8153CvA", 0x804: "RTL8153CHvA", 0x805: "RTL8154CvA", 0x807: "RTL8153CvB", 0x80A: "RTL8153CHvB",
+    0x80D: "RTL8153CvB", 0x810: "RTL8153CHvB",
+    0x901: "RTL8153DvA", 0x903: "RTL8153DDvA", 0xA01: "RTL8157", 0xB01: "RTL8159",
+}
+
+
+def variant_name(code: int) -> str:
+    """Realtek's own name for a variant code (its tool 2.0.30), '' if none."""
+    return _NAMES.get(code, "")
+
+
+# Efuse protocol by chip type - Realtek's tool keeps a number for it: 1 (byte-wise, 0xC0 bytes),
+# 2 (dword-wise through 0xDD04, 0x510 bytes), 3 ("V3" in its messages, byte-wise, 0xD0 bytes).
+EFUSE_OLD, EFUSE_DWORD, EFUSE_V3 = "type 1", "type 2 (dword)", "type 3 (V3)"
+_OLD = {0x1001, 0x2001, 0x2002, 0x2003, 0x3001, 0x3002, 0x3003, 0x3004, 0x3005, 0x3101, 0x3102, 0x3201}
+_V3 = {0x3105, 0x3106, 0x3204, 0x3205}
+
+
+def efuse_protocol(ctype: int):
+    """(protocol, size in bytes) for a chip type from chip_type(), or (None, 0) if the type is unknown."""
+    if ctype in _OLD:
+        return EFUSE_OLD, 0xC0
+    if ctype in _V3:
+        return EFUSE_V3, 0xD0
+    if ctype:
+        return EFUSE_DWORD, 0x510
+    return None, 0
+
+
+def chip_name(ctype: int, variant: int = 0, new_chip: bool = False) -> str:
+    """'RTL8153UG (type 0x3106)' - Realtek's name when the variant is known, its type number always."""
+    if not ctype:
+        return "unknown Realtek chip"
+    name = variant_name(variant) or {0x10: "RTL8152", 0x20: "RTL8152", 0x30: "RTL8153", 0x31: "RTL8153B",
+                                     0x32: "RTL8153C", 0x40: "RTL8156", 0x41: "RTL8156B", 0x50: "RTL8157",
+                                     0x60: "RTL8159"}.get(ctype >> 8, "Realtek")
+    return f"{name} (type 0x{ctype:04X}" + (", a revision not in Realtek's tables)" if new_chip else ")")
+
+PG_STAMP_REGS = (0xD3A0, 0xE818)   # Realtek's tool leaves its own and its CFG version here (RTL8156 / RTL8153B)
 
 
 def describe_pg_stamp(data: bytes) -> str:
@@ -81,6 +290,69 @@ def describe_pg_stamp(data: bytes) -> str:
     if len(data) != 4:
         return ""
     return f"PG tool {data[1]}.{data[0]:02d}, CFG {int.from_bytes(data[2:4], 'little')}"
+# --- RTL8153-family (older) efuse: 17-bit cells, command word at 0xDD02 -------------------------------------
+# Ported 1:1 from RTUNicPG: FUN_14001c630 (write encode) and FUN_14001c8d0 (read decode). Each 16-bit word is
+# stored in a 17-bit cell with one "hole" bit whose position depends on the word address; the encoder inserts
+# it (set to 1 = leave unprogrammed), the decoder removes it. Byte writes go through a word whose other byte
+# is 0xFF (= untouched): programming only clears bits, 1s are no-ops.
+
+def efuse8153_shift(waddr: int) -> int:
+    s = waddr & 0xF
+    if waddr & 0x10:
+        s = 0x10 - s
+    return s
+
+
+def efuse8153_encode_write(waddr: int, word: int) -> int:
+    """The 0xDD00 dword that programs 16-bit `word` into efuse word `waddr` (write command 0x4000 | waddr)."""
+    s = efuse8153_shift(waddr)
+    v = ((word >> s) << (s + 1)) & 0xFFFFFFFF
+    if s:
+        v |= ((word << (32 - s)) & 0xFFFFFFFF) >> (32 - s)
+    low = v & 0xFFFF
+    if (v >> 16) & 1:
+        low |= 0x800000
+    hole = 0x17 if s == 0x10 else s
+    return ((1 << hole) | ((waddr & 0x7F | 0x4000) << 16) | low) & 0xFFFFFFFF
+
+
+def efuse8153_decode_read(v: int) -> int:
+    """16-bit word from the 0xDD00 dword after a read command (its high word echoes the word address)."""
+    s = efuse8153_shift((v >> 16) & 0x1F)
+    cell = ((v >> 7) & 0x10000) | (v & 0xFFFF)
+    w = ((cell >> (s + 1)) << s) & 0xFFFFFFFF
+    if s:
+        w |= ((cell << (32 - s)) & 0xFFFFFFFF) >> (32 - s)
+    return w & 0xFFFF
+
+
+def efuse8153_write_word(addr: int, old_byte: int, new_byte: int) -> int:
+    """EFuseWrite's word for one byte: (~old | new) in this byte's half, 0xFF (untouched) in the other half."""
+    b = (~old_byte | new_byte) & 0xFF
+    return (b << 8 | 0x00FF) if addr & 1 else (b | 0xFF00)
+
+
+def record_dword_writes(area: bytes, at: int, rec: bytes) -> list:
+    """Type 2 (dword) efuse: the dword writes that put `rec` at byte `at`, right after the last record - no FF
+    gap, since FF ends the records. Bytes of a touched dword outside `rec` keep their current value (they are
+    either earlier records or still blank). Returns [(dwaddr, old, new)], the dword holding the header byte
+    last, so the record only becomes visible once everything after its header is in place."""
+    first, last = at >> 2, (at + len(rec) - 1) >> 2
+    out = []
+    for dw in range(first, last + 1):
+        old = bytes(area[dw * 4:dw * 4 + 4])
+        new = bytearray(old)
+        for i, b in enumerate(rec):
+            if dw * 4 <= at + i < dw * 4 + 4:
+                new[at + i - dw * 4] = b
+        out.append((dw, int.from_bytes(old, "little"), int.from_bytes(bytes(new), "little")))
+    return out[1:] + out[:1]
+
+
+def efuse_v3_write_command(addr: int, word: int) -> int:
+    """V3 protocol (late RTL8153B/C): the 0xDD00 dword that programs `word` (from efuse8153_write_word) at byte
+    `addr` - bit30 = write, the even byte address in bits 23..16, no bit rotation (Realtek's tool 2.0.19/2.0.30)."""
+    return (0x40000000 | ((addr & 0x1FE) << 15) | (word & 0xFFFF)) & 0xFFFFFFFF
 
 
 FLASH_RECORDS_START = 0x008   # SPI flash: an 8-byte header, then autoload records until the first 0xFF

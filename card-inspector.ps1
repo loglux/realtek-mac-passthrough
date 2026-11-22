@@ -16,7 +16,7 @@ $ErrorActionPreference = 'Stop'
 $ROOT    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TOOLS   = Join-Path $ROOT 'tools'
 $PY      = 'python'
-$Version = '0.2.0'
+$Version = '0.2.1'
 $script:DemoMode = $Demo.IsPresent -or ($Screenshot -ne '')
 $DEMO_RED_GUID   = '{11111111-1111-1111-1111-111111111111}'
 $DEMO_GREEN_GUID = '{22222222-2222-2222-2222-222222222222}'
@@ -71,7 +71,7 @@ function Demo-Py($script, $argline) {
     'diag.py' {
       if ($g -eq 'plain') {
         return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-          "bcdDevice(REV) = 0x31FD","  0xD81A USB_MISC_0 = 0x0000","  0xD81F USB_MISC_1 = 0x40",
+          "bcdDevice(REV) = 0x31FD","CHIP = RTL8153UG (type 0x3106), efuse protocol = type 3 (V3)","  0xD81A USB_MISC_0 = 0x0000","  0xD81F USB_MISC_1 = 0x40",
           "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1","  chip variant (r8152) = none",
           "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)",
           "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)",
@@ -85,7 +85,7 @@ function Demo-Py($script, $argline) {
       $lin = if ($green) {'RTL8153-AD variant, and 0xCFDB bit0 is set'} else {'RTL8153-AD variant, but 0xCFDB bit0 is not set'}
       $pxe = if ($green) {'both clone bits set - 0x03 verified at pre-boot on a Dell'} else {$aux}
       return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-        "bcdDevice(REV) = 0x3104","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
+        "bcdDevice(REV) = 0x3104","CHIP = RTL8156BG (type 0x4102), efuse protocol = type 2 (dword)","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
         ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  chip variant (r8152) = AD",
         ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
         "  storage DC00 = 0x00   SPI flash ID = 00 00 00","CONFIG STORAGE = efuse (one-time) - no external memory found; EEPROM not probed") -join "`r`n")
@@ -93,12 +93,17 @@ function Demo-Py($script, $argline) {
     'settings.py' {
       if ($g -eq 'plain') {
         $ff = 'ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|'
-        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8153 protocol)",
+        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8153UG (type 0x3106)","STORAGE efuse = responding (type 3 (V3) protocol)",
           "STORAGE flash = PUYA 2 MB - holds the driver install disk, not chip settings","",
-          "=== EFUSE (256 bytes - the whole address space, one-time programmable) ===","0x000-0x0FF: all FF",
-          "records:","  (none - the area is empty)","in plain words:",
-          "  no setting records at all - the chip takes nothing from its efuse and runs on its factory defaults",
-          "  0x000-0x0FF  all FF = empty: never written (256 bytes free; FF is the blank state)",
+          "=== EFUSE (208 bytes - the whole address space, one-time programmable) ===",
+          '0x000: 40 cc 24 20 25 c0 00 00 11 22 33 44 ad 20 e8 22  |@.$ %...."3D. ."|',
+          '0x010: 08 23 e8 18 18 02 05 04 ff ff ff ff ff ff ff ff  |.#..............|',"0x020-0x0BF: all FF",
+          '0x0C0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|',
+          "records:","  0x000: write [20] -> reg 0xCC24","  0x004: write [00 11 22 33 44 AD] -> reg 0xC000  (MAC address)",
+          "  0x00D: write [08] -> reg 0xE822","  0x011: write [18 02 05 04] -> reg 0xE818  (programmed with PG tool 2.24, CFG 1029)",
+          "in plain words:","  0x000-0x017  4 setting record(s), listed above; the chip applies them at power-on",
+          "  0x018-0x0CE  all FF = empty: never written (183 bytes free; FF is the blank state)",
+          "  0x0CF        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)",
           "  no 0xCFDB record - the pass-through bits are the chip's own default",
           "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself","",
           "=== SPI FLASH (first 256 bytes) - driver install disk, not chip settings ===",
@@ -107,13 +112,13 @@ function Demo-Py($script, $argline) {
           "  0x008-...    FF = empty; the disk image itself starts at 0x1000 (not shown)",
           "  the chip does not load settings from this flash (RTL8153 datasheet 6.4: efuse or EEPROM only)") -join "`r`n")
       }
-      $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","STORAGE efuse = responding (RTL8156 protocol)","STORAGE flash = none","",
+      $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8156BG (type 0x4102)","STORAGE efuse = responding (type 2 (dword) protocol)","STORAGE flash = none","",
         "=== EFUSE (2048 bytes - the whole address space, one-time programmable) ===",
         '0x000: 45 c0 00 00 11 22 33 44 66 41 d8 22 98 b3 42 cf  |E...."3DfA."..B.|')
       # records sit back to back; a burned record is appended right after the last one (the parser stops at the first FF)
       $lines += $(if ($g -eq 'green') { '0x010: dc 20 00 64 40 cf db 01 40 cf db 03 ff ff ff ff  |. .d@...@.......|' }
                   else { '0x010: dc 20 00 64 40 cf db 01 ff ff ff ff ff ff ff ff  |. .d@...........|' })
-      $lines += @('0x020-0x7FF: all FF',"records:",
+      $lines += @('0x020-0x4FF: all FF','0x500: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|','0x510-0x7FF: all FF',"records:",
         "  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)",
         "  0x009: write [98 B3] -> reg 0xD822",
         "  0x00E: write [20 00 64] -> reg 0xCFDC",
@@ -122,9 +127,10 @@ function Demo-Py($script, $argline) {
       $lines += ("  => 0xCFDB ends up as 0x{0} (the last record wins)" -f $(if ($g -eq 'green') {'03'} else {'01'}))
       $lines += "in plain words:"
       $lines += $(if ($g -eq 'green') { @("  0x000-0x01B  5 setting record(s), listed above; the chip applies them at power-on",
-                                          "  0x01C-0x7FF  all FF = empty: never written (2020 bytes free; FF is the blank state)") }
+                                          "  0x01C-0x50E  all FF = empty: never written (1267 bytes free; FF is the blank state)") }
                   else { @("  0x000-0x017  4 setting record(s), listed above; the chip applies them at power-on",
-                           "  0x018-0x7FF  all FF = empty: never written (2024 bytes free; FF is the blank state)") })
+                           "  0x018-0x50E  all FF = empty: never written (1271 bytes free; FF is the blank state)") })
+      $lines += "  0x50F        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)"
       $lines += "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself"
       return ($lines -join "`r`n")
     }
@@ -180,6 +186,7 @@ function Parse-Diag($dr) {
   $d.Ok = $true; $d.CfdbHex = $cfhex; $d.Cf = [Convert]::ToInt32($cfhex,16)
   $d.Bit0 = $d.Cf -band 1; $d.Bit1 = ($d.Cf -shr 1) -band 1
   $d.Rev = Rx $dr 'bcdDevice\(REV\)\s*=\s*(0x[0-9A-Fa-f]+)'
+  $d.Chip = Rx $dr '(?m)^CHIP = (.+?), efuse protocol'; $d.Proto = Rx $dr 'efuse protocol = (.+)'
   $d.M0  = Rx $dr '0xD81A\s+USB_MISC_0\s*=\s*(0x[0-9A-Fa-f]+)'
   $d.M1  = Rx $dr '0xD81F\s+USB_MISC_1\s*=\s*(0x[0-9A-Fa-f]+)'
   $d.Variant = Rx $dr 'chip variant \(r8152\)\s*=\s*(\S+)'
@@ -516,7 +523,7 @@ function Preview {
       $cur = Rx $out '@0x[0-9A-Fa-f]+ = (0x[0-9A-Fa-f]{8})'
       $rng = Rx $out '(0x[0-9A-Fa-f]+)\.\.0x[0-9A-Fa-f]+ ='
       if ($out -match 'EFUSE UNAVAILABLE') {
-        Set-Result 'err' 'Can''t burn this chip  -  nothing written' 'Its efuse uses the RTL8153 protocol, which this tool can read but not write.'
+        Set-Result 'err' 'Can''t burn this chip  -  nothing written' 'Its efuse does not use the dword protocol of the RTL8156 family, the only one this tool writes.'
       } elseif ($cur -eq '0xFFFFFFFF' -and $rng) {
         $script:previewOk = $true
         Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record 40 CF DB 03  at efuse offset $rng   " + [char]0x00B7 + '   free slot, factory data untouched')
@@ -566,8 +573,8 @@ function Fill-Details {
   $rtb = $detRtb; $rtb.Clear(); $detDump.Text = ''
   if (-not $d -or -not $d.Ok) { $detDump.Text = '(read a card first)'; return }
   Add-Txt $rtb "DEVICE`r`n" $C_ACCENT $true $FS_L
-  Add-Txt $rtb ("  {0}`r`n  Windows name : {1}`r`n  MAC address  : {2}`r`n  Chip         : {3}, rev {4}`r`n  Settings in  : {5}`r`n  Diag DLL     : {6}`r`n`r`n" -f `
-    $d.Card.Desc, $d.Card.Name, $d.Card.Mac, (Chip-Name $d.Card.Pid), $d.Rev, $d.Storage, $d.Dll) $C_TEXT $false $FS_M $true
+  Add-Txt $rtb ("  {0}`r`n  Windows name : {1}`r`n  MAC address  : {2}`r`n  Chip         : {3}, rev {4}`r`n  Efuse        : {7} protocol`r`n  Settings in  : {5}`r`n  Diag DLL     : {6}`r`n`r`n" -f `
+    $d.Card.Desc, $d.Card.Name, $d.Card.Mac, $(if ($d.Chip) { $d.Chip } else { Chip-Name $d.Card.Pid }), $d.Rev, $d.Storage, $d.Dll, $(if ($d.Proto) { $d.Proto } else { 'unknown' })) $C_TEXT $false $FS_M $true
   Add-Txt $rtb "PASS-THROUGH BY SYSTEM  -  each one checks a different marker`r`n" $C_ACCENT $true $FS_L
   foreach ($k in @('Windows','PXE','Linux')) {
     if (-not $d.Layers.Contains($k)) { continue }
@@ -619,7 +626,7 @@ Generated : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
 DEVICE     : $($d.Card.Desc)
 Windows    : $($d.Card.Name)
 MAC        : $($d.Card.Mac)
-Chip       : $(Chip-Name $d.Card.Pid), rev $($d.Rev)
+Chip       : $(if ($d.Chip) { $d.Chip } else { Chip-Name $d.Card.Pid }), rev $($d.Rev), efuse protocol $($d.Proto)
 Settings in: $($d.Storage)
 
 PASS-THROUGH BY SYSTEM
