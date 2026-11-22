@@ -75,7 +75,7 @@ function Demo-Py($script, $argline) {
         $m0 = if ($script:demoAD) {'0x1000'} else {'0x0000'}; $var = if ($script:demoAD) {'AD'} else {'none'}
         $lin = if ($script:demoAD) {'YES  (RTL8153-AD variant, and 0xCFDB bit0 is set)'} else {'NO   (not a chip variant r8152 recognises (no AD / BND / BD marker))'}
         return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-          "bcdDevice(REV) = 0x31FD","CHIP = RTL8153BvB (type 0x3102), efuse protocol = type 1","  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x40",
+          "bcdDevice(REV) = 0x31FD","CHIP = RTL8153BvB (type 0x3102), efuse protocol = type 1","  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x00",
           "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1","  chip variant (r8152) = $var",
           "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)",
           "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)",
@@ -101,14 +101,17 @@ function Demo-Py($script, $argline) {
           @("0x000: 41 d8 1a 00 10 ff ff ff ff ff ff ff ff ff ff ff  |A...............|","0x010-0x0BF: all FF","records:",
             "  0x000: write [00 10] -> reg 0xD81A  (USB_MISC_0 - chip variant (AD marker))","in plain words:",
             "  0x000-0x004  1 setting record(s), listed above; the chip applies them at power-on",
-            "  0x005-0x0BF  all FF = empty: never written (187 bytes free; FF is the blank state)",
+            "  0x005-0x0BE  all FF = empty: never written (186 bytes free; FF is the blank state)",
+            "  0x0BF        FF = write counter: 0 programming session(s) by Realtek's tool (one bit burned per session)",
             "  no 0xCFDB record - the pass-through bits are the chip's own default")
         } else {
           @("0x000-0x0BF: all FF","records:","  (none - the area is empty)","in plain words:",
             "  no setting records at all - the chip takes nothing from its efuse and runs on its factory defaults",
-            "  0x000-0x0BF  all FF = empty: never written (192 bytes free; FF is the blank state)",
+            "  0x000-0x0BE  all FF = empty: never written (191 bytes free; FF is the blank state)",
+            "  0x0BF        FF = write counter: 0 programming session(s) by Realtek's tool (one bit burned per session)",
             "  no 0xCFDB record - the pass-through bits are the chip's own default",
-            "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself")
+            "  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records",
+            "               (USB_MISC_0 = 0x0000, USB_MISC_1 = 0x00: Linux sees a plain chip, Realtek calls it RTL8153BvB)")
         }
         return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8153BvB (type 0x3102)","STORAGE efuse = responding (type 1 protocol)",
           "STORAGE flash = PUYA 2 MB - holds the driver install disk, not chip settings","",
@@ -125,7 +128,7 @@ function Demo-Py($script, $argline) {
       # records sit back to back; a burned record is appended right after the last one (the parser stops at the first FF)
       $lines += $(if ($g -eq 'green') { '0x010: dc 20 00 64 40 cf db 01 40 cf db 03 ff ff ff ff  |. .d@...@.......|' }
                   else { '0x010: dc 20 00 64 40 cf db 01 ff ff ff ff ff ff ff ff  |. .d@...........|' })
-      $lines += @('0x020-0x7FF: all FF',"records:",
+      $lines += @('0x020-0x4FF: all FF','0x500: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|','0x510-0x7FF: all FF',"records:",
         "  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)",
         "  0x009: write [98 B3] -> reg 0xD822",
         "  0x00E: write [20 00 64] -> reg 0xCFDC",
@@ -134,10 +137,11 @@ function Demo-Py($script, $argline) {
       $lines += ("  => 0xCFDB ends up as 0x{0} (the last record wins)" -f $(if ($g -eq 'green') {'03'} else {'01'}))
       $lines += "in plain words:"
       $lines += $(if ($g -eq 'green') { @("  0x000-0x01B  5 setting record(s), listed above; the chip applies them at power-on",
-                                          "  0x01C-0x7FF  all FF = empty: never written (2020 bytes free; FF is the blank state)") }
+                                          "  0x01C-0x50E  all FF = empty: never written (1267 bytes free; FF is the blank state)") }
                   else { @("  0x000-0x017  4 setting record(s), listed above; the chip applies them at power-on",
-                           "  0x018-0x7FF  all FF = empty: never written (2024 bytes free; FF is the blank state)") })
-      $lines += "  no chip-variant record (USB_MISC_0/1) - the variant is whatever the chip reports by itself"
+                           "  0x018-0x50E  all FF = empty: never written (1271 bytes free; FF is the blank state)") })
+      $lines += "  0x50F        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)"
+      $lines += @("  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records","               (USB_MISC_0 = 0x1000, USB_MISC_1 = 0x00: Linux sees ""-AD"", Realtek calls it RTL8156BG)")
       return ($lines -join "`r`n")
     }
     'marker.py' {
@@ -207,7 +211,7 @@ function Parse-Diag($dr) {
   $d.Ok = $true; $d.CfdbHex = $cfhex; $d.Cf = [Convert]::ToInt32($cfhex,16)
   $d.Bit0 = $d.Cf -band 1; $d.Bit1 = ($d.Cf -shr 1) -band 1
   $d.Rev = Rx $dr 'bcdDevice\(REV\)\s*=\s*(0x[0-9A-Fa-f]+)'
-  $d.Chip = Rx $dr '(?m)^CHIP = (.+?), efuse protocol'; $d.Proto = Rx $dr 'efuse protocol = (\S+)'
+  $d.Chip = Rx $dr '(?m)^CHIP = (.+?), efuse protocol'; $d.Proto = Rx $dr 'efuse protocol = (.+)'
   $d.M0  = Rx $dr '0xD81A\s+USB_MISC_0\s*=\s*(0x[0-9A-Fa-f]+)'
   $d.M1  = Rx $dr '0xD81F\s+USB_MISC_1\s*=\s*(0x[0-9A-Fa-f]+)'
   $d.Variant = Rx $dr 'chip variant \(r8152\)\s*=\s*(\S+)'

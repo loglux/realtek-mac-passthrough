@@ -22,6 +22,9 @@ The good news is that RtlPassthru can burn it in.
 
 > Screenshots use sample data (a made-up MAC). Nothing personal is shown.
 
+> **Only need it in Windows, and would rather not change the card?** [Registry Fix](registry-fix/README.md)
+> turns pass-through on with a Realtek driver setting — fully reversible, no Python, no Realtek DLL.
+
 ---
 
 ## How it works
@@ -186,11 +189,17 @@ Below the tiles, **one action card** offers what fits *this* card:
 
   ![Linux not on this card](docs/img/05-linux-not-on-this-card.png)
 
-**Details ▾** opens a panel under the window with two tabs: *Markers & registers* (every register
-each system checks, and its value) and *Settings dump* — the chip's efuse in hex with its setting records
-decoded and summarised in plain words (and, if the card has an SPI flash, the start of it — on the
+**Details ▾** opens a panel under the window with two tabs: *Markers & registers* (the exact chip, every
+register each system checks, and its value) and *Settings dump* — the chip's efuse in hex with its setting
+records decoded and summarised in plain words (and, if the card has an SPI flash, the start of it — on the
 cards we read that flash holds the driver install disk, not chip settings). **Save report** writes
 all of it to a text file.
+
+The chip is identified the way Realtek's own tool does it — the same registers, the same tables — and
+shown with Realtek's name for it (for example *RTL8153UG* or *RTL8156BG*). The chip type decides how its
+efuse is read: Realtek uses three efuse protocols (*type 1*, *type 2 (dword)*, *type 3 (V3)*), and
+`RTL8153` alone comes with all three depending on the revision. Reading is proven on type 2 (RTL8156B)
+and type 3 (RTL8153UG) cards, byte for byte against Realtek's tool.
 
 ![Details: settings dump](docs/img/04-efuse-decoded.png)
 
@@ -254,7 +263,7 @@ Card-Inspector.bat     launcher (self-elevates to admin)
 card-inspector.ps1     the window (PowerShell / WinForms)
 tools/                 Python backend:
   diag.py                read registers (REV, USB_MISC, 0xCFDB) and the per-system verdict
-  settings.py            read-only settings dump: efuse (RTL8156 and RTL8153 protocols) + SPI flash start
+  settings.py            read-only settings dump: chip type, efuse (all three protocols) + SPI flash start
   efuse.py               efuse dump / preview / burn (RTL8156-family efuse)
   rtldiag.py             unified DLL layer (classifies + drives the Realtek library)
   passthru.py            which registers each system checks -> the verdict (unit-tested)
