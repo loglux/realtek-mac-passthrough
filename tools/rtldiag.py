@@ -14,7 +14,8 @@ import struct
 from ctypes import wintypes
 
 from efuse_core import (byte_enable, chip_name, chip_type, chip_variant, efuse_protocol,  # noqa: E402
-                        efuse8153_decode_read, efuse8153_encode_write, efuse8153_write_word)
+                        efuse8153_decode_read, efuse8153_encode_write, efuse8153_write_word,
+                        efuse_v3_write_command)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(os.path.dirname(_HERE))   # CardInspector/tools -> CardInspector -> repo root
@@ -216,6 +217,10 @@ class RtlDiag:
         if self._USBRd is not None:
             self._USBRd.argtypes = [ctypes.c_void_p, ctypes.c_ubyte, ctypes.c_uint, ctypes.c_void_p, ctypes.c_ushort]
             self._USBRd.restype = ctypes.c_int
+        self._USBWr = getattr(d, "Direct_USBDirectWrite", None) or getattr(d, "USBDirectWrite", None)
+        if self._USBWr is not None:
+            self._USBWr.argtypes = [ctypes.c_void_p, ctypes.c_ubyte, ctypes.c_uint, ctypes.c_void_p, ctypes.c_ushort]
+            self._USBWr.restype = ctypes.c_int
         self._Bcd = getattr(d, p + "ReadbcdDevice", None)
         if self._Bcd is not None:
             self._Bcd.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
@@ -289,6 +294,13 @@ class RtlDiag:
         self._USBRd(ctypes.cast(self.ctx, ctypes.c_void_p), 0, addr & 0xffff, ctypes.cast(buf, ctypes.c_void_p), size)
         return int.from_bytes(bytes(buf), "little")
 
+    def usb_write(self, addr, size, value):
+        """Write a USB-OCP register with the DLL's own USBDirectWrite (the counterpart of usb_read)."""
+        if self._USBWr is None:
+            raise RuntimeError("USBDirectWrite not exported by this DLL")
+        buf = (ctypes.c_ubyte * size)(*value.to_bytes(size, "little"))
+        return self._USBWr(ctypes.cast(self.ctx, ctypes.c_void_p), 0, addr & 0xffff, ctypes.cast(buf, ctypes.c_void_p), size)
+
     def read_bcd(self):
         """bcdDevice (REV) from the USB descriptor, or None if the DLL does not export it."""
         if self._Bcd is None:
@@ -337,7 +349,8 @@ class RtlDiag:
     def _flash_session(self, fn):
         """Run fn() with the SPI interface enabled (PG mode); put the two enable registers back afterwards."""
         pg = self.pg_enter()                               # the SPI interface only answers in PG mode
-        e84c, e81c = self._rb(0xE84C), self._rb(0xE81C)
+        e84c, e81c, e85b = self._rb(0xE84C), self._rb(0xE81C), self._rb(0xE85B)
+        self._wb(0xE85B, e85b)                             # see below - the same write also wakes the SPI up front
         try:
             self._wb(0xE84C, e84c | 0x10)
             self._wb(0xE81C, e81c | 0xC0)                 # enable the SPI interface
@@ -345,6 +358,9 @@ class RtlDiag:
         finally:
             self._wb(0xE81C, e81c)
             self._wb(0xE84C, e84c)
+            # after a long bit-banged read the next session's SPI stays silent until 0xE85B is written once
+            # (seen on an RTL8153UG); writing back its own value is enough
+            self._wb(0xE85B, e85b)
             if pg == 1:
                 self.pg_leave()
 
@@ -480,31 +496,93 @@ class RtlDiag:
         """Realtek's chip type alone (0 if the family is unknown)."""
         return self.chip_info()["type"]
 
+    # --- efuse protocol type 3 ("V3" in Realtek's messages): late RTL8153B/C, types 0x3105/06, 0x3204/05 ---
+    # Realtek's tool 2.0.30 enters PG mode on these chips with 0xE85B |= 0x10 and USB 0xD380 |= 0x0C and keeps
+    # them for the session; without the 0x10 bit the controller answers every read with FF.
+    def v3_session_begin(self, for_write=False):
+        """Set the session bits - 0xE85B.0x10 always, USB 0xD380 |= 0x0C only for writing (reading works without
+        it, as in 2.0.19). Returns what v3_session_end() puts back."""
+        e85b = self.dread(0xE85B, 1)[0]
+        d380 = None
+        if for_write and self._USBRd is not None and self._USBWr is not None:
+            d380 = self.usb_read(0xD380, 1)
+            self.usb_write(0xD380, 1, d380 | 0x0C)
+        self.dwrite(0xE85B, 1, bytes([e85b | 0x10]))
+        return e85b, d380
+
+    def v3_session_end(self, saved):
+        e85b, d380 = saved
+        self.dwrite(0xE85B, 1, bytes([0x10]))             # efuse off with 0x10 still set, then 0x10 off
+        self.dwrite(0xE85B, 1, bytes([e85b & 0xEF & 0x3B]))
+        if d380 is not None:
+            self.usb_write(0xD380, 1, d380)
+
+    # The controller clears 0xE85B by itself after every efuse command (seen on an RTL8153UG), so on/off are
+    # written as whole values that keep the 0x10 bit - an off/on that drops it makes the next read return FF.
+    def _v3_on(self):
+        self.dwrite(0xE85B, 1, bytes([0x10 | 0xC4]))
+
+    def _v3_off(self):
+        self.dwrite(0xE85B, 1, bytes([0x10]))
+
+    def _v3_wait(self, bit, what):
+        for _ in range(self.EFUSE_POLLS):
+            v = int.from_bytes(self.dread(0xDD00, 4), "little")
+            if not v & bit:
+                return v
+        raise EfuseUnavailable(f"efuse controller does not answer (type 3, {what}).")
+
+    def efuse_v3_read_byte(self, addr):
+        """One byte (inside a V3 session): 0xDD00 = 0x80000000 | (addr & 0x1FE) << 15, wait for bit31, low byte
+        for an even address, second byte for an odd one (Realtek's EFuseRead, branch for type 3)."""
+        self._v3_on()
+        try:
+            self.dwrite(0xDD00, 4, ((0x80000000 | ((addr & 0x1FE) << 15)) & 0xFFFFFFFF).to_bytes(4, "little"))
+            v = self._v3_wait(0x80000000, "read")
+        finally:
+            self._v3_off()
+        return (v >> 8 if addr & 1 else v) & 0xFF
+
     def efuse_v3_dump(self, nbytes=0xD0):
-        """Efuse of a late RTL8153B/C (types 0x3105/06, 0x3204/05), as Realtek's tool 2.0.19 reads it:
-        0xE85B |= 0x10 and |= 0xC4, then per byte 0xDD00 = 0x80000000 | (addr & 0x1FE) << 15, wait for bit31,
-        take the low (even address) or second (odd) byte. Without the 0x10 bit the controller answers with FF.
-        0xE85B is put back as it was."""
-        orig = self.dread(0xE85B, 1)[0]
-        self.dwrite(0xE85B, 1, bytes([orig | 0x10]))
+        """The whole efuse of a type 3 chip (read only); 0xE85B and 0xD380 are put back as they were."""
+        # efuse switched on once for the whole dump (the form verified byte-for-byte against Realtek's tool, and
+        # the one that leaves the SPI flash reachable afterwards); the controller clears 0xE85B after each
+        # command, the read keeps working
+        e85b = self.dread(0xE85B, 1)[0]
+        self.dwrite(0xE85B, 1, bytes([e85b | 0x10]))
         self.efuse_enable()
         out = bytearray()
         try:
             for a in range(nbytes):
                 self.dwrite(0xDD00, 4, ((0x80000000 | ((a & 0x1FE) << 15)) & 0xFFFFFFFF).to_bytes(4, "little"))
-                for _ in range(self.EFUSE_POLLS):
-                    v = int.from_bytes(self.dread(0xDD00, 4), "little")
-                    if not v & 0x80000000:
-                        break
-                else:
-                    raise EfuseUnavailable("efuse controller does not answer (V3 protocol). Nothing was written.")
+                v = self._v3_wait(0x80000000, "read")
                 out.append((v >> 8 if a & 1 else v) & 0xFF)
-        finally:   # put it back in Realtek's order: efuse off (& 0x3B), then the 0x10 bit (& 0xEF)
+        finally:   # Realtek's order: efuse off (& 0x3B), then the 0x10 bit (& 0xEF)
             self.efuse_disable()
             v = self.dread(0xE85B, 1)[0]
-            self.dwrite(0xE85B, 1, bytes([(v & 0xEF) | (orig & 0x10)]))
+            self.dwrite(0xE85B, 1, bytes([(v & 0xEF) | (e85b & 0x10)]))
         return bytes(out)
 
+    def efuse_v3_write_byte(self, addr, new):
+        """One byte (inside a V3 session). PERMANENT. Returns the read-back. Realtek's EFuseWrite, branch for
+        type 3 (2.0.19 FUN_140029dc0, 2.0.30 FUN_140029440): word = (~old | new) in this byte's half, FF in the
+        other; efuse on; 0xDD00 |= bit27, wait; 0xDD00 = 0x40000000 | (addr & 0x1FE) << 15 | word, wait bit30;
+        0xDD00 |= bit28, wait; efuse off; read back."""
+        old = self.efuse_v3_read_byte(addr)
+        cmd = efuse_v3_write_command(addr, efuse8153_write_word(addr, old, new))
+        self._v3_on()
+        try:
+            v = int.from_bytes(self.dread(0xDD00, 4), "little") | 0x08000000
+            self.dwrite(0xDD00, 4, v.to_bytes(4, "little"))
+            self._v3_wait(0x08000000, "prepare")
+            self.dwrite(0xDD00, 4, cmd.to_bytes(4, "little"))
+            self._v3_wait(0x40000000, "write")
+            v = int.from_bytes(self.dread(0xDD00, 4), "little") | 0x10000000
+            self.dwrite(0xDD00, 4, v.to_bytes(4, "little"))
+            self._v3_wait(0x10000000, "finish")
+        finally:
+            self._v3_off()
+        return self.efuse_v3_read_byte(addr)
     def efuse_read_dword(self, dw):
         self.dwrite(0xDD04, 2, ((dw & 0x1ff) | 0x8000).to_bytes(2, "little"))
         self._efuse_wait(0x8000)
