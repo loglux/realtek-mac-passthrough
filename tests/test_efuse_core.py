@@ -93,10 +93,10 @@ def test_flash_append_point():
 
 def test_pg_stamp():
     # WAVLINK RTL8156BG: Realtek's tool reported "Nic PG version = 2.19", "Nic CFG version = 1028" for 13 02 04 04.
-    assert ec.describe_pg_stamp(bytes.fromhex("13020404")) == "PG tool 2.19, CFG 1028"
+    assert ec.describe_pg_stamp(bytes.fromhex("13020404")) == "Realtek's tool 2.19, CFG 1028"
     # The burned RTL8156 dongle (ETH6_EFUSE above) carries 0F 02 01 04.
     stamp = next(r for r in ec.parse_autoload_records(ETH6_EFUSE) if r["reg"] in ec.PG_STAMP_REGS)
-    assert ec.describe_pg_stamp(stamp["data"]) == "PG tool 2.15, CFG 1025"
+    assert ec.describe_pg_stamp(stamp["data"]) == "Realtek's tool 2.15, CFG 1025"
     assert ec.describe_pg_stamp(b"\x01") == ""
 def _cell_as_read(waddr, dword):
     """What a read of `waddr` returns after `dword` was programmed: the 17-bit cell + the address echo."""
@@ -196,7 +196,7 @@ def test_ugreen_records_and_stamp():
     recs = ec.parse_autoload_records(UGREEN_EFUSE)
     assert [(r["at"], r["reg"]) for r in recs] == [(0x00, 0xCC24), (0x04, 0xC000), (0x0D, 0xE822), (0x11, 0xE818)]
     assert recs[1]["data"] == bytes.fromhex("ec1ac31234ad")
-    assert ec.describe_pg_stamp(recs[3]["data"]) == "PG tool 2.24, CFG 1029"    # Realtek's tool: V2.24(1.029)
+    assert ec.describe_pg_stamp(recs[3]["data"]) == "Realtek's tool 2.24, CFG 1029"    # Realtek's tool: V2.24(1.029)
     assert ec.find_append_point(UGREEN_EFUSE[:-1])["append"] == 0x18            # a new record goes after these
 
 

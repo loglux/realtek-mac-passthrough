@@ -100,7 +100,7 @@ function Demo-Py($script, $argline) {
           '0x010: 08 23 e8 18 18 02 05 04 ff ff ff ff ff ff ff ff  |.#..............|',"0x020-0x0BF: all FF",
           '0x0C0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|',
           "records:","  0x000: write [20] -> reg 0xCC24","  0x004: write [00 11 22 33 44 AD] -> reg 0xC000  (MAC address)",
-          "  0x00D: write [08] -> reg 0xE822","  0x011: write [18 02 05 04] -> reg 0xE818  (programmed with PG tool 2.24, CFG 1029)",
+          "  0x00D: write [08] -> reg 0xE822","  0x011: write [18 02 05 04] -> reg 0xE818  (programmed with Realtek's tool 2.24, CFG 1029)",
           "in plain words:","  0x000-0x017  4 setting record(s), listed above; the chip applies them at power-on",
           "  0x018-0x0CE  all FF = empty: never written (183 bytes free; FF is the blank state)",
           "  0x0CF        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)",
