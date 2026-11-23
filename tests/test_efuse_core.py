@@ -282,3 +282,23 @@ def test_efuse_capacity_matches_realtek_remain():
     # live readings with its 2.0.19: UGREEN records end at 0x18 -> 178, RTL8153E dongle at 0x1A -> 176
     assert ec.efuse_capacity(ec.EFUSE_V3, 0xD0) - 0x18 == 178
     assert ec.efuse_capacity(ec.EFUSE_V3, 0xD0) - 0x1A == 176
+
+
+def test_provenance_factory_and_modified():
+    # UGREEN and the dongle before the marker: the stamp is the last record -> factory state
+    for area in (UGREEN_EFUSE, DONGLE_EFUSE):
+        p = ec.efuse_provenance(ec.parse_autoload_records(area), area[-1])
+        assert p["stamped"] and p["added"] == [] and p["sessions"] == 1
+    # the dongle after the marker: one record after the stamp, counter still 1 -> added, not by Realtek's tool
+    p = ec.efuse_provenance(ec.parse_autoload_records(DONGLE_EFUSE_AD), DONGLE_EFUSE_AD[-1])
+    assert [(a["at"], a["reg"], a["own"]) for a in p["added"]] == [(0x1A, 0xD81A, "the -AD marker RtlPassthru writes")]
+    assert p["by_realtek"] is False
+    # WAVLINK tail: factory 0xCFDB = 01, Realtek's stamp, then our 0xCFDB = 03
+    tail = bytes.fromhex("40cfdb01" "23d3a013020404" "40cfdb03") + b"\xff"
+    p = ec.efuse_provenance(ec.parse_autoload_records(tail), 0xFE)
+    assert [(a["reg"], a["own"]) for a in p["added"]] == [(0xCFDB, "the pass-through bits RtlPassthru writes")]
+    # a second Realtek session (counter 2, one stamp) - can't say it was not Realtek's tool
+    assert ec.efuse_provenance(ec.parse_autoload_records(tail), 0xFC)["by_realtek"] is True
+    # no stamp at all: nothing can be told
+    p = ec.efuse_provenance(ec.parse_autoload_records(bytes.fromhex("40cfdb03ff")), 0xFE)
+    assert not p["stamped"] and p["by_realtek"] is None

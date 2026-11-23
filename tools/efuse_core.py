@@ -380,6 +380,36 @@ def describe_pg_stamp(data: bytes) -> str:
     if len(data) != 4:
         return ""
     return f"Realtek's tool {data[1]}.{data[0]:02d}, CFG {int.from_bytes(data[2:4], 'little')}"
+
+
+# The records this project writes - recognised by their exact bytes.
+OWN_RECORDS = {(0xCFDB, b"\x03"): "the pass-through bits RtlPassthru writes",
+               (0xD81A, b"\x00\x10"): "the -AD marker RtlPassthru writes"}
+
+
+def efuse_sessions(counter: int) -> int:
+    """Programming sessions by Realtek's tool from the write-counter byte (one bit burned per session)."""
+    return 8 - bin(counter & 0xFF).count("1")
+
+
+def efuse_provenance(recs: list, counter=None) -> dict:
+    """Which records were added after Realtek's factory programming.
+
+    Realtek's tool ends every session with its stamp record (0xD3A0 / 0xE818, its version and CFG) and burns
+    one bit of the write counter. So records after the last stamp were written later - and if the counter
+    shows no more sessions than there are stamps, not by Realtek's tool. Without a stamp nothing can be told.
+    Returns {'stamped', 'stamps', 'sessions' (None if no counter), 'added': [{at, reg, data, own}],
+    'by_realtek' (True / False / None = unknown)}; own = OWN_RECORDS text or ''."""
+    stamps = [i for i, r in enumerate(recs) if r["kind"] == "reg" and r["reg"] in PG_STAMP_REGS
+              and describe_pg_stamp(r["data"])]
+    sessions = efuse_sessions(counter) if counter is not None else None
+    if not stamps:
+        return {"stamped": False, "stamps": 0, "sessions": sessions, "added": [], "by_realtek": None}
+    added = [{"at": r["at"], "reg": r["reg"], "data": r["data"],
+              "own": OWN_RECORDS.get((r["reg"], bytes(r["data"])), "") if r["kind"] == "reg" else ""}
+             for r in recs[stamps[-1] + 1:]]
+    by_realtek = None if (not added or sessions is None) else sessions > len(stamps)
+    return {"stamped": True, "stamps": len(stamps), "sessions": sessions, "added": added, "by_realtek": by_realtek}
 # --- RTL8153-family (older) efuse: 17-bit cells, command word at 0xDD02 -------------------------------------
 # Ported 1:1 from RTUNicPG: FUN_14001c630 (write encode) and FUN_14001c8d0 (read decode). Each 16-bit word is
 # stored in a 17-bit cell with one "hole" bit whose position depends on the word address; the encoder inserts

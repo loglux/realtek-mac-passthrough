@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
 from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, describe_pg_stamp, efuse_capacity,
-                        parse_autoload_records, variant_name)
+                        efuse_provenance, parse_autoload_records, variant_name)
 from passthru import chip_variant as linux_variant
 from rtldiag import EfuseUnavailable, RtlDiag
 from storage import flash_name, has_flash
@@ -77,6 +77,24 @@ def _records(recs):
         print(f"  => 0xCFDB ends up as 0x{regs[0xCFDB][-1]:02X} (the last record wins)")
 
 
+def _provenance(p):
+    """Factory state or modified: records after Realtek's last stamp were added later (efuse_provenance)."""
+    if not p["stamped"]:
+        print("  no stamp of Realtek's tool - cannot tell factory records from ones added later")
+        return
+    if not p["added"]:
+        print("  FACTORY STATE: no records after the stamp of Realtek's tool - nothing was added since")
+        return
+    who = ("not by Realtek's tool: no new stamp, and the write counter shows no extra session"
+           if p["by_realtek"] is False else
+           "the write counter shows extra sessions - possibly Realtek's tool" if p["by_realtek"] else "")
+    print(f"  MODIFIED: {len(p['added'])} record(s) added after the factory programming" + (f" ({who})" if who else ""))
+    for a in p["added"]:
+        what = (f"0x{a['reg']:04X} = {' '.join(f'{b:02X}' for b in a['data'])}" if a["reg"] is not None
+                else "a command record")
+        print(f"  0x{a['at']:03X}        added later: {what}" + (f" - {a['own']}" if a["own"] else ""))
+
+
 def _summary(recs, data, start, store, counter_at=None, misc=None, capacity=None):
     """Plain-language reading of a dump: what is records, what is empty space, and the write counter (the last
     byte of the efuse area: Realtek's tool burns one bit of it per programming session). `capacity` = where
@@ -108,6 +126,7 @@ def _summary(recs, data, start, store, counter_at=None, misc=None, capacity=None
               "(one bit burned per session)")
     for a, b in others:
         print(f"  0x{a:03X}-0x{b:03X}  other data - not setting records (the records end at the first FF), not decoded")
+    _provenance(efuse_provenance(recs, data[counter_at] if counted else None))
     regs = {r["reg"] for r in recs if r["kind"] == "reg"}
     if 0xCFDB not in regs:
         print("  no 0xCFDB record - the pass-through bits are the chip's own default")
