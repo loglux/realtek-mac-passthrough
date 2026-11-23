@@ -12,7 +12,7 @@ changed**, and **Remove fix** puts everything back.
 | Tile | Question |
 |---|---|
 | **Laptop (BIOS)** | Does the BIOS publish its pass-through MAC? (*publishes* / *turned off* in BIOS setup / *no* such feature) |
-| **Card driver** | Is the card on Realtek's driver? The fix is a Realtek driver setting; Microsoft's generic driver ignores it. |
+| **Card driver** | Is the card on Realtek's driver? The fix is a Realtek driver setting; Microsoft's generic driver ignores it. It also shows **BASICFUNC** when the card's maker chose Realtek's *BasicFunc* driver profile, which switches pass-through off (see below). |
 | **In Windows now** | Does the card have the laptop's MAC right now? |
 
 Below the tiles, one card shows only what fits: **1 · Preview → 2 · Apply fix**, **Remove fix** when the fix is
@@ -42,6 +42,9 @@ Four `REG_DWORD` values in this one card's driver key,
 | `AUXMacSupportVer` | `1` |
 | `EnableCloneMAC` | `1` |
 
+If the key already had any of them, **Apply fix** keeps the old values in one more value, `RegistryFixBackup`,
+and **Remove fix** puts exactly those back. Without them it simply deletes the four.
+
 The MAC itself always comes from the laptop's BIOS (its ACPI table); the tool never sets a MAC address.
 **Details** shows the key, each value now and what the fix sets, and **Save report** writes it to a file.
 
@@ -51,6 +54,12 @@ The MAC itself always comes from the laptop's BIOS (its ACPI table); the tool ne
   marker in its own chip — that is what **RtlPassthru** (the main tool in this repository) checks and fixes.
 - A **driver update or reinstall** can reset the driver settings; run the tool again if the MAC is back to the card's own.
 - If a **manual MAC** (*Network Address*) is set for the card, it overrides pass-through — the tool points it out.
+- **BasicFunc cards.** Realtek's Windows driver picks a *profile* for each card from the last digit of its USB
+  revision, which the card's maker burns in. The *BasicFunc* profile (a revision ending in `F`) writes
+  `EnableCloneMAC = 0` when the driver is installed, so Windows won't pass the MAC through even when the chip
+  allows it. The fix sets it to `1`; **Remove fix** puts the `0` back. A driver reinstall writes the `0` again.
+
+  ![A BasicFunc card](img/basicfunc.png)
 
 ![Turned off in BIOS](img/bios-off.png)
 

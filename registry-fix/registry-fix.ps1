@@ -8,17 +8,21 @@
   -Demo shows made-up data.  -Screenshot <png> [-State <name>] saves one demo state to a PNG.
 #>
 param([switch]$Demo, [string]$Screenshot = '',
-      [ValidateSet('ready','preview','applied','works-fix','works-native','not-loaded','bios-off','no-feature','ms-driver','no-card','details')]
+      [ValidateSet('ready','preview','applied','works-fix','works-native','not-loaded','bios-off','no-feature','ms-driver','no-card','details','basicfunc')]
       [string]$State = 'ready')
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $ErrorActionPreference = 'Stop'
-$Version = '1.0.0'
+$Version = '1.1.0'
 $script:DemoMode = $Demo.IsPresent -or ($Screenshot -ne '')
 
 # ---------- the fix: four DWORD values in the card's driver key ----------
 $RECIPE = [ordered]@{ EnableManualCloneMAC = 1; AUXMacType = 3; AUXMacSupportVer = 1; EnableCloneMAC = 1 }
 $CLASS  = 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}'
+# Apply keeps any of the four values the key already had here (name|kind|value per line); Remove puts them back.
+# That matters on a card with Realtek's BasicFunc driver profile: its install wrote EnableCloneMAC = 0, and a
+# missing value means "on" to the driver - deleting it would leave pass-through on instead of undoing the fix.
+$BACKUP = 'RegistryFixBackup'
 
 # ---------- theme (same as Card-Inspector) ----------
 function rgb($r,$g,$b) { [Drawing.Color]::FromArgb($r,$g,$b) }
@@ -73,16 +77,17 @@ function Get-CardInfo($a) {
   if ($m.Success) { $chip = 'RTL' + $m.Groups[1].Value.ToUpper() }
   $key = Get-ChildItem $CLASS -ErrorAction SilentlyContinue | Where-Object {
     (Get-ItemProperty $_.PSPath -Name NetCfgInstanceId -ErrorAction SilentlyContinue).NetCfgInstanceId -eq $a.InterfaceGuid } | Select-Object -First 1
-  $vals = [ordered]@{}; $na = ''
+  $vals = [ordered]@{}; $na = ''; $inf = ''
   if ($key) {
     $p = Get-ItemProperty $key.PSPath
     foreach ($n in $RECIPE.Keys) { $vals[$n] = $p.$n }
-    $na = [string]$p.NetworkAddress
+    $na = [string]$p.NetworkAddress; $inf = [string]$p.InfSection
   }
   $setN = @($RECIPE.Keys | Where-Object { $vals[$_] -eq $RECIPE[$_] }).Count
   @{ Adapter = $a; Name = $a.Name; Desc = $a.InterfaceDescription; Mac = (Format-Mac $a.MacAddress)
      Chip = $chip; Service = $svc; Realtek = ($svc -match '^rtu'); Key = $key; Values = $vals; SetN = $setN
-     ManualMac = (Format-Mac $na); Link = $(if ($a.MediaConnectionState -eq 'Connected') { "connected, $($a.LinkSpeed)" } else { 'no cable' }) }
+     ManualMac = (Format-Mac $na); Link = $(if ($a.MediaConnectionState -eq 'Connected') { "connected, $($a.LinkSpeed)" } else { 'no cable' })
+     Inf = $inf; Basic = ($inf -match '_BasicFunc') }
 }
 
 # ---------- demo data (made-up MACs) ----------
@@ -95,6 +100,8 @@ function Demo-State($s) {
              Mac = $(if ($s -in 'works-fix','works-native') { $fwMac } else { $own }); Service = 'rtump64x64'; Realtek = $true
              Key = @{ PSChildName = '0019' }; Values = $vals; SetN = $(if ($fix) { 4 } else { 0 }); ManualMac = ''; Link = 'connected, 2.5 Gbps' }
   if ($s -eq 'ms-driver') { $card.Service = 'UsbNcm'; $card.Realtek = $false }
+  $card.Inf = 'RTL8156Bx64.ndi.NT'; $card.Basic = $false
+  if ($s -eq 'basicfunc') { $card.Inf = 'RTL8156Bx64_BasicFunc.ndi.NT'; $card.Basic = $true; $card.Values.EnableCloneMAC = '0' }
   $fw = switch ($s) { 'bios-off' { @{ Mac = ''; Supported = $true } } 'no-feature' { @{ Mac = ''; Supported = $false } } default { @{ Mac = '001122334455'; Supported = $true } } }
   $list = New-Object System.Collections.ArrayList
   if ($s -ne 'no-card') { [void]$list.Add($card) }
@@ -231,7 +238,9 @@ function Show-State {
     $aTitle.Text = 'Plug in the dock or dongle'; $aBody.Text = 'No Realtek USB network card is connected. Plug it in and press Rescan.'
     Set-Status 'No card.' $C_MUTED; return
   }
-  if ($c.Realtek) { Set-Tile 'Driver' 'yes' 'REALTEK' $c.Service } else { Set-Tile 'Driver' 'no' 'OTHER' ($c.Service + ' - needs Realtek''s') }
+  if (-not $c.Realtek) { Set-Tile 'Driver' 'no' 'OTHER' ($c.Service + ' - needs Realtek''s') }
+  elseif ($c.Basic -and $c.SetN -ne $RECIPE.Count) { Set-Tile 'Driver' 'warn' 'BASICFUNC' 'profile turns pass-through off' }
+  else { Set-Tile 'Driver' 'yes' 'REALTEK' $(if ($c.Basic) { $c.Service + ', BasicFunc profile' } else { $c.Service }) }
   $works = $fw.Mac -and ($c.Mac -eq (Format-Mac $fw.Mac))
   $fix = $c.SetN -eq $RECIPE.Count
   if ($works) { Set-Tile 'Result' 'yes' 'WORKS' "the card has the laptop's MAC" }
@@ -269,7 +278,8 @@ function Show-State {
     Set-Status 'Fix set, waiting for a re-plug.' $C_AMBER
   } else {
     $aTitle.Text = "Turn on pass-through in Windows"
-    $aBody.Text = "The laptop publishes its MAC, but this card's driver does not take it. The fix sets four Realtek driver values for this card only."
+    $aBody.Text = $(if ($c.Basic) { "The card's maker chose Realtek's BasicFunc driver profile, which switches pass-through off (EnableCloneMAC = 0). The fix turns it on - four Realtek driver values, this card only." }
+                    else { "The laptop publishes its MAC, but this card's driver does not take it. The fix sets four Realtek driver values for this card only." })
     $aNote.Text = 'Reversible: Remove fix puts the card back. Windows only.'
     Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Btn $btnA2 '2   Apply fix' 'primary' $false
     Set-Result 'hint' 'Start with Preview' 'It shows the registry key and the four values - nothing is written. Apply unlocks after it.'
@@ -301,7 +311,14 @@ function Apply-Fix {
   $c = Current; if (-not $c -or -not $script:previewOk) { return }
   if (-not (Test-Admin) -and -not $script:DemoMode) { Set-Result 'err' 'Not running as administrator' 'Start it with Registry-Fix.bat - nothing written.'; return }
   try {
-    if (-not $script:DemoMode) { foreach ($n in $RECIPE.Keys) { New-ItemProperty $c.Key.PSPath -Name $n -Value $RECIPE[$n] -PropertyType DWord -Force | Out-Null } }
+    if (-not $script:DemoMode) {
+      $k = Get-Item $c.Key.PSPath
+      if ($k.GetValueNames() -notcontains $BACKUP) {         # the first Apply only: what the key had before the fix
+        $old = @(foreach ($n in $RECIPE.Keys) { if ($k.GetValueNames() -contains $n) { "$n|$($k.GetValueKind($n))|$($k.GetValue($n))" } })
+        if ($old.Count) { New-ItemProperty $c.Key.PSPath -Name $BACKUP -Value ([string[]]$old) -PropertyType MultiString -Force | Out-Null }
+      }
+      foreach ($n in $RECIPE.Keys) { New-ItemProperty $c.Key.PSPath -Name $n -Value $RECIPE[$n] -PropertyType DWord -Force | Out-Null }
+    }
     Refresh-All
     Set-Result 'ok' 'Fix applied' 'Now unplug the dock or dongle and plug it back in, then press Rescan.'
   } catch { Set-Result 'err' 'Could not write the fix' "$_" }
@@ -309,10 +326,19 @@ function Apply-Fix {
 function Remove-Fix {
   $c = Current; if (-not $c -or -not $c.Key) { return }
   if (-not (Test-Admin) -and -not $script:DemoMode) { Set-Result 'err' 'Not running as administrator' 'Start it with Registry-Fix.bat - nothing changed.'; return }
-  $r = [Windows.Forms.MessageBox]::Show("Remove the fix from this card?`n`nThe four Realtek driver values are deleted; after a re-plug the card uses its own MAC again.", 'Remove fix', 'YesNo', 'Question')
+  $r = [Windows.Forms.MessageBox]::Show("Remove the fix from this card?`n`nThe four Realtek driver values go back to what the card's driver had before; after a re-plug the card uses its own MAC again.", 'Remove fix', 'YesNo', 'Question')
   if ($r -ne [Windows.Forms.DialogResult]::Yes) { return }
   try {
-    if (-not $script:DemoMode) { foreach ($n in $RECIPE.Keys) { Remove-ItemProperty $c.Key.PSPath -Name $n -ErrorAction SilentlyContinue } }
+    if (-not $script:DemoMode) {
+      $k = Get-Item $c.Key.PSPath
+      $old = if ($k.GetValueNames() -contains $BACKUP) { @($k.GetValue($BACKUP)) } else { @() }
+      foreach ($n in $RECIPE.Keys) { Remove-ItemProperty $c.Key.PSPath -Name $n -ErrorAction SilentlyContinue }
+      foreach ($line in $old) {                              # put back what the card's driver had set itself
+        $f = ([string]$line).Split('|', 3)
+        if ($f.Count -eq 3 -and $RECIPE.Contains($f[0])) { New-ItemProperty $c.Key.PSPath -Name $f[0] -Value $f[2] -PropertyType $f[1] -Force | Out-Null }
+      }
+      Remove-ItemProperty $c.Key.PSPath -Name $BACKUP -ErrorAction SilentlyContinue
+    }
     Refresh-All
     Set-Result 'ok' 'Fix removed' 'Unplug and re-plug the card to go back to its own MAC.'
   } catch { Set-Result 'err' 'Could not remove the fix' "$_" }
@@ -327,6 +353,7 @@ function Detail-Text {
   if (-not $c) { return $s + "CARD$nl  none found$nl" }
   $s += "CARD$nl  $($c.Desc)$nl  Windows name  : $($c.Name)$nl  chip (USB ID) : $($c.Chip)$nl  MAC now       : $($c.Mac)$nl"
   $s += "  driver        : $($c.Service)" + $(if ($c.Realtek) { '  (Realtek)' } else { '  (not Realtek - the fix needs it)' }) + $nl
+  if ($c.Inf) { $s += "  driver profile: $($c.Inf)" + $(if ($c.Basic) { '  (BasicFunc: sets EnableCloneMAC = 0 - the fix turns it on)' } else { '' }) + $nl }
   $s += "  link          : $($c.Link)$nl"
   if ($c.ManualMac) { $s += "  manual MAC    : $($c.ManualMac)  (NetworkAddress - overrides pass-through)$nl" }
   $s += "${nl}THE FIX (this card's driver key)$nl  $(Key-Path $c)$nl"
