@@ -1,10 +1,11 @@
-<#
+﻿<#
   RtlPassthru - Realtek USB NIC MAC pass-through: inspect and fix.
   Main window: three tiles (Windows / Pre-boot / Linux) answer "does it work, and where"; one action card
   offers the fix that fits this card - burn the AUX bit into efuse (permanent) - or says honestly that
   nothing can be done. Details (inline, under the buttons): registers, markers and the settings dump.
   Backend (tools/): diag.py, settings.py, efuse.py, marker.py - one DLL layer (rtldiag.py).
-  marker.py (the "Enable Linux" card on a plain RTL8153) is NOT proven on hardware yet - dev branch only.
+  marker.py (the "Enable Linux" card on a plain RTL8153): proven with the V3 efuse protocol (RTL8153E);
+  type 1 is not yet proven - the card says so before a burn.
   Run as ADMIN (Card-Inspector.bat self-elevates):  powershell.exe -STA -File card-inspector.ps1
   -Demo renders with synthetic data (no hardware, no vendor DLL, made-up MACs).
   -Screenshot <png> [-State red|green|plain|dry|details|efuse] saves one state to a PNG (implies -Demo).
@@ -17,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $ROOT    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TOOLS   = Join-Path $ROOT 'tools'
 $PY      = 'python'
-$Version = '0.3.0-dev'
+$Version = '0.3.0'
 $script:DemoMode = $Demo.IsPresent -or ($Screenshot -ne '')
 $DEMO_RED_GUID   = '{11111111-1111-1111-1111-111111111111}'
 $DEMO_GREEN_GUID = '{22222222-2222-2222-2222-222222222222}'
@@ -74,17 +75,18 @@ function Demo-Py($script, $argline) {
       if ($g -eq 'plain') {
         $m0 = if ($script:demoAD) {'0x1000'} else {'0x0000'}; $var = if ($script:demoAD) {'AD'} else {'none'}
         $lin = if ($script:demoAD) {'YES  (RTL8153-AD variant, and 0xCFDB bit0 is set)'} else {'NO   (not a chip variant r8152 recognises (no AD / BND / BD marker))'}
+        $chip = if ($script:demoAD) {'RTL8153E (type 0x3106) + efuse record USB_MISC_0 (0xD81A) = 0x1000 (not a factory value)'} else {'RTL8153E (type 0x3106)'}
         return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-          "bcdDevice(REV) = 0x31FD","CHIP = RTL8153BvB (type 0x3102), efuse protocol = type 1","  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x00",
+          "bcdDevice(REV) = 0x310D",("CHIP = $chip, efuse protocol = type 3 (V3)"),"  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x10",
           "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1","  chip variant (r8152) = $var",
           "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)",
           "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)",
           "PASSTHRU Linux   = $lin",
           "  storage DC00 = 0x40   SPI flash ID = 85 60 15",
           "CONFIG STORAGE = efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings",
-          (DJ @{ tool='diag'; rev=0x31FD; cfdb=3; usb_misc_0=$(if ($script:demoAD) {0x1000} else {0}); usb_misc_1=0
+          (DJ @{ tool='diag'; rev=0x310D; cfdb=3; usb_misc_0=$(if ($script:demoAD) {0x1000} else {0}); usb_misc_1=0x10
                  linux_variant=$(if ($script:demoAD) {'AD'} else {$null})
-                 chip=@{ name='RTL8153BvB (type 0x3102)'; type=0x3102; variant=0x202; protocol='type 1'; new_chip=$false }
+                 chip=@{ name=$chip; type=0x3106; variant=0x216; protocol='type 3 (V3)'; new_chip=$false }
                  dll=@{ family='Direct_API'; version='5.0.0.2'; exports=216; path='dll\new\RtlDirectDiagLib64.dll' }
                  layers=@{ Windows=@{ ok=$true; why='AUX-clone bit (0xCFDB bit1) is set' }
                            PXE=@{ ok=$true; why='both clone bits set - 0x03 verified at pre-boot on a Dell' }
@@ -109,81 +111,125 @@ function Demo-Py($script, $argline) {
     }
     'settings.py' {
       if ($g -eq 'plain') {
-        $ff = 'ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|'
+        # a plain RTL8153E (type 0x3106, efuse protocol V3) - the dongle the -AD marker was proven on, made-up MAC
+        $recs = @("  0x000: write [00 11 22 33 44 AD] -> reg 0xC000  (MAC address)","  0x009: write [87 78] -> reg 0xDD90",
+          "  0x00E: write [0D 31] -> reg 0xC054","  0x013: write [18 02 05 04] -> reg 0xE818  (programmed with Realtek's tool 2.24, CFG 1029)")
         $ef = if ($script:demoAD) {
-          @("0x000: 41 d8 1a 00 10 ff ff ff ff ff ff ff ff ff ff ff  |A...............|","0x010-0x0BF: all FF","records:",
-            "  0x000: write [00 10] -> reg 0xD81A  (USB_MISC_0 - chip variant (AD marker))","in plain words:",
-            "  0x000-0x004  1 setting record(s), listed above; the chip applies them at power-on",
-            "  0x005-0x0BE  all FF = empty: never written (186 bytes free; FF is the blank state)",
-            "  0x0BF        FF = write counter: 0 programming session(s) by Realtek's tool (one bit burned per session)",
-            "  no 0xCFDB record - the pass-through bits are the chip's own default")
+          @('0x000: 25 c0 00 00 11 22 33 44 ad 21 dd 90 87 78 41 c0  |%...."3D.!...xA.|','0x010: 54 0d 31 23 e8 18 18 02 05 04 41 d8 1a 00 10 ff  |T.1#......A.....|',
+            '0x020-0x0BF: all FF','0x0C0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|','records:') + $recs + @(
+            "  0x01A: write [00 10] -> reg 0xD81A  (USB_MISC_0 - chip variant (AD marker))","in plain words:",
+            "  0x000-0x01E  5 setting record(s), listed above; the chip applies them at power-on",
+            "  0x01F-0x0C9  all FF = empty: never written (171 bytes free; FF is the blank state)",
+            "  0x0CA-0x0CE  reserved by Realtek's tool - never used for records",
+            "  0x0CF        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)",
+            "  MODIFIED: 1 record(s) added after the factory programming (not by Realtek's tool: no new stamp, and the write counter shows no extra session)",
+            "  0x01A        added later: 0xD81A = 00 10 - the -AD marker RtlPassthru writes",
+            "  no 0xCFDB record - the pass-through bits are the chip's own default",
+            "  USB_MISC record - not a factory value: the chip applies it over its own chip-variant value",
+            "               (now USB_MISC_0 = 0x1000, USB_MISC_1 = 0x10: Linux sees ""-AD"", Realtek calls the chip itself RTL8153E)")
         } else {
-          @("0x000-0x0BF: all FF","records:","  (none - the area is empty)","in plain words:",
-            "  no setting records at all - the chip takes nothing from its efuse and runs on its factory defaults",
-            "  0x000-0x0BE  all FF = empty: never written (191 bytes free; FF is the blank state)",
-            "  0x0BF        FF = write counter: 0 programming session(s) by Realtek's tool (one bit burned per session)",
+          @('0x000: 25 c0 00 00 11 22 33 44 ad 21 dd 90 87 78 41 c0  |%...."3D.!...xA.|','0x010: 54 0d 31 23 e8 18 18 02 05 04 ff ff ff ff ff ff  |T.1#............|',
+            '0x020-0x0BF: all FF','0x0C0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|','records:') + $recs + @(
+            "in plain words:",
+            "  0x000-0x019  4 setting record(s), listed above; the chip applies them at power-on",
+            "  0x01A-0x0C9  all FF = empty: never written (176 bytes free; FF is the blank state)",
+            "  0x0CA-0x0CE  reserved by Realtek's tool - never used for records",
+            "  0x0CF        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)",
+            "  FACTORY STATE: no records after the stamp of Realtek's tool - nothing was added since",
             "  no 0xCFDB record - the pass-through bits are the chip's own default",
             "  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records",
-            "               (USB_MISC_0 = 0x0000, USB_MISC_1 = 0x00: Linux sees a plain chip, Realtek calls it RTL8153BvB)")
+            "               (USB_MISC_0 = 0x0000, USB_MISC_1 = 0x10: Linux sees a plain chip, Realtek calls it RTL8153E)")
         }
-        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8153BvB (type 0x3102)","STORAGE efuse = responding (type 1 protocol)",
+        $ff = 'ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  |................|'
+        $chip = if ($script:demoAD) {'RTL8153E (type 0x3106) + efuse record USB_MISC_0 (0xD81A) = 0x1000 (not a factory value)'} else {'RTL8153E (type 0x3106)'}
+        return (@("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP $chip","STORAGE efuse = responding (type 3 (V3) protocol)",
           "STORAGE flash = PUYA 2 MB - holds the driver install disk, not chip settings","",
-          "=== EFUSE (192 bytes - the whole address space, one-time programmable) ===") + $ef + @("",
+          "=== EFUSE (208 bytes - the whole address space, one-time programmable) ===") + $ef + @("",
           "=== SPI FLASH (first 256 bytes) - driver install disk, not chip settings ===",
           "0x000: 06 02 00 00 00 08 00 00 ff ff ff ff ff ff ff ff  |................|","0x010: $ff","in plain words:",
           "  0x000-0x007  06 02 00 00 00 08 00 00  header of the driver install disk",
           "  0x008-...    FF = empty; the disk image itself starts at 0x1000 (not shown)",
           "  the chip does not load settings from this flash (RTL8153 datasheet 6.4: efuse or EEPROM only)") -join "`r`n")
       }
+      # generated by settings.py from the demo efuse: made-up MAC, Realtek's stamp last, then (green) our 0xCFDB record
       $lines = @("GUID (demo)  (DLL: Direct_API v5.0.0.2, 216 procedures)","CHIP RTL8156BG (type 0x4102)","STORAGE efuse = responding (type 2 (dword) protocol)","STORAGE flash = none","",
-        "=== EFUSE (2048 bytes - the whole address space, one-time programmable) ===",
-        '0x000: 45 c0 00 00 11 22 33 44 66 41 d8 22 98 b3 42 cf  |E...."3DfA."..B.|')
-      # records sit back to back; a burned record is appended right after the last one (the parser stops at the first FF)
-      $lines += $(if ($g -eq 'green') { '0x010: dc 20 00 64 40 cf db 01 40 cf db 03 ff ff ff ff  |. .d@...@.......|' }
-                  else { '0x010: dc 20 00 64 40 cf db 01 ff ff ff ff ff ff ff ff  |. .d@...........|' })
-      $lines += @('0x020-0x4FF: all FF','0x500: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|','0x510-0x7FF: all FF',"records:",
-        "  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)",
-        "  0x009: write [98 B3] -> reg 0xD822",
-        "  0x00E: write [20 00 64] -> reg 0xCFDC",
-        "  0x014: write [01] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)")
-      if ($g -eq 'green') { $lines += "  0x018: write [03] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)" }
-      $lines += ("  => 0xCFDB ends up as 0x{0} (the last record wins)" -f $(if ($g -eq 'green') {'03'} else {'01'}))
-      $lines += "in plain words:"
-      $lines += $(if ($g -eq 'green') { @("  0x000-0x01B  5 setting record(s), listed above; the chip applies them at power-on",
-                                          "  0x01C-0x50E  all FF = empty: never written (1267 bytes free; FF is the blank state)") }
-                  else { @("  0x000-0x017  4 setting record(s), listed above; the chip applies them at power-on",
-                           "  0x018-0x50E  all FF = empty: never written (1271 bytes free; FF is the blank state)") })
-      $lines += "  0x50F        FE = write counter: 1 programming session(s) by Realtek's tool (one bit burned per session)"
-      $lines += @("  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records","               (USB_MISC_0 = 0x1000, USB_MISC_1 = 0x00: Linux sees ""-AD"", Realtek calls it RTL8156BG)")
+        "=== EFUSE (2048 bytes - the whole address space, one-time programmable) ===")
+      $lines += $(if ($g -eq 'green') { @(
+        '0x000: 25 c0 00 00 11 22 33 44 66 42 d8 22 98 b3 a3 42  |%...."3DfB."...B|',
+        '0x010: cf dc 20 00 64 40 cf db 01 23 d3 a0 13 02 04 04  |.. .d@...#......|',
+        '0x020: 40 cf db 03 ff ff ff ff ff ff ff ff ff ff ff ff  |@...............|',
+        '0x030-0x4FF: all FF',
+        '0x500: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|',
+        '0x510-0x7FF: all FF',
+        'records:',
+        '  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)',
+        '  0x009: write [98 B3 A3] -> reg 0xD822',
+        '  0x00F: write [20 00 64] -> reg 0xCFDC',
+        '  0x015: write [01] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)',
+        '  0x019: write [13 02 04 04] -> reg 0xD3A0  (programmed with Realtek''s tool 2.19, CFG 1028)',
+        '  0x020: write [03] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)',
+        '  => 0xCFDB ends up as 0x03 (the last record wins)',
+        'in plain words:',
+        '  0x000-0x023  6 setting record(s), listed above; the chip applies them at power-on',
+        '  0x024-0x507  all FF = empty: never written (1252 bytes free; FF is the blank state)',
+        '  0x508-0x50E  reserved by Realtek''s tool - never used for records',
+        '  0x50F        FE = write counter: 1 programming session(s) by Realtek''s tool (one bit burned per session)',
+        '  MODIFIED: 1 record(s) added after the factory programming (not by Realtek''s tool: no new stamp, and the write counter shows no extra session)',
+        '  0x020        added later: 0xCFDB = 03 - the pass-through bits RtlPassthru writes',
+        '  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records',
+        '               (USB_MISC_0 = 0x1000, USB_MISC_1 = 0x00: Linux sees "-AD", Realtek calls it RTL8156BG)') }
+                  else { @(
+        '0x000: 25 c0 00 00 11 22 33 44 66 42 d8 22 98 b3 a3 42  |%...."3DfB."...B|',
+        '0x010: cf dc 20 00 64 40 cf db 01 23 d3 a0 13 02 04 04  |.. .d@...#......|',
+        '0x020-0x4FF: all FF',
+        '0x500: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|',
+        '0x510-0x7FF: all FF',
+        'records:',
+        '  0x000: write [00 11 22 33 44 66] -> reg 0xC000  (MAC address)',
+        '  0x009: write [98 B3 A3] -> reg 0xD822',
+        '  0x00F: write [20 00 64] -> reg 0xCFDC',
+        '  0x015: write [01] -> reg 0xCFDB  (SW_FEATURE - MAC clone / pass-through bits)',
+        '  0x019: write [13 02 04 04] -> reg 0xD3A0  (programmed with Realtek''s tool 2.19, CFG 1028)',
+        '  => 0xCFDB ends up as 0x01 (the last record wins)',
+        'in plain words:',
+        '  0x000-0x01F  5 setting record(s), listed above; the chip applies them at power-on',
+        '  0x020-0x507  all FF = empty: never written (1256 bytes free; FF is the blank state)',
+        '  0x508-0x50E  reserved by Realtek''s tool - never used for records',
+        '  0x50F        FE = write counter: 1 programming session(s) by Realtek''s tool (one bit burned per session)',
+        '  FACTORY STATE: no records after the stamp of Realtek''s tool - nothing was added since',
+        '  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records',
+        '               (USB_MISC_0 = 0x1000, USB_MISC_1 = 0x00: Linux sees "-AD", Realtek calls it RTL8156BG)') })
       return ($lines -join "`r`n")
     }
     'marker.py' {
-      $mj = @{ tool='marker'; burn=@{}; plan=@{ result='OK'; reason=''; record='41 D8 1A 00 10'; at=0; protocol='type 1'; proven=$false } }
+      $mj = @{ tool='marker'; burn=@{}; plan=@{ result='OK'; reason=''; record='41 D8 1A 00 10'; at=0x1A; protocol='type 3 (V3)'; proven=$true } }
       if ($script:demoAD) {
         $mj.plan = @{ result='NOT_NEEDED'; reason='the chip already reports the -AD marker' }
         return ("USB_MISC_0 now = 0x1000   0xCFDB now = 0x03`r`nPLAN RESULT = NOT NEEDED (the chip already reports the -AD marker)`r`n" + (DJ $mj))
       }
-      $plan = @("USB_MISC_0 now = 0x0000   0xCFDB now = 0x03","CHIP RTL8153BvB (type 0x3102), efuse protocol = type 1","EFUSE = 192 bytes (type 1 protocol), records = 0, non-FF bytes = 0",
-        "PLAN record = 41 D8 1A 00 10  (USB_MISC_0 = 0x1000, the -AD marker)","PLAN at = 0x00",
-        "PLAN byte 0x01 = 0xD8   0xDD00 <- 0x4080B1FF","PLAN byte 0x02 = 0x1A   0xDD00 <- 0x4081FE36",
-        "PLAN byte 0x03 = 0x00   0xDD00 <- 0x400101FF","PLAN byte 0x04 = 0x10   0xDD00 <- 0x4082FE24",
-        "PLAN byte 0x00 = 0x41   0xDD00 <- 0x4080FE83   (header, burned last - activates the record)","PLAN PROTOCOL = type 1 - written from Realtek's tool, not yet proven on hardware","PLAN RESULT = OK")
+      $plan = @("USB_MISC_0 now = 0x0000   0xCFDB now = 0x03","CHIP RTL8153E (type 0x3106), efuse protocol = type 3 (V3)","EFUSE = 208 bytes (type 3 (V3) protocol), records = 4, non-FF bytes = 27",
+        "PLAN record = 41 D8 1A 00 10  (USB_MISC_0 = 0x1000, the -AD marker)","PLAN at = 0x1A",
+        "PLAN byte 0x1B = 0xD8   0xDD00 <- 0x400DD8FF","PLAN byte 0x1C = 0x1A   0xDD00 <- 0x400EFF1A",
+        "PLAN byte 0x1D = 0x00   0xDD00 <- 0x400E00FF","PLAN byte 0x1E = 0x10   0xDD00 <- 0x400FFF10",
+        "PLAN byte 0x1A = 0x41   0xDD00 <- 0x400DFF41   (header, burned last - activates the record)",
+        "PLAN V3 per byte (Realtek's tool 2.0.30): 0xE85B.0x10 and USB 0xD380 |= 0x0C for the session; efuse on; 0xDD00 bit27, wait; command, wait bit30; bit28, wait; efuse off; read back",
+        "PLAN PROTOCOL = type 3 (V3) - proven on hardware","PLAN RESULT = OK")
       if ($argline -like '*--burn*') {
         $script:demoAD = $true
-        return (($plan + "BURN byte 0x01 = 0xD8, read back 0xD8  OK" + "BURN byte 0x02 = 0x1A, read back 0x1A  OK" +
-          "BURN byte 0x03 = 0x00, read back 0x00  OK" + "BURN byte 0x04 = 0x10, read back 0x10  OK" + "BURN byte 0x00 = 0x41, read back 0x41  OK" +
-          "BURN RESULT = OK (record burned and verified at 0x00; unplug and re-plug the card to load it)") -join "`r`n") + "`r`n" +
-          (DJ $(& { $mj.burn = @{ result='OK'; reason='record burned and verified at 0x00; unplug and re-plug the card to load it' }; $mj }))
+        return (($plan + "BURN byte 0x1B = 0xD8, read back 0xD8  OK" + "BURN byte 0x1C = 0x1A, read back 0x1A  OK" +
+          "BURN byte 0x1D = 0x00, read back 0x00  OK" + "BURN byte 0x1E = 0x10, read back 0x10  OK" + "BURN byte 0x1A = 0x41, read back 0x41  OK" +
+          "BURN RESULT = OK (record burned and verified at 0x1A; unplug and re-plug the card to load it)") -join "`r`n") + "`r`n" +
+          (DJ $(& { $mj.burn = @{ result='OK'; reason='record burned and verified at 0x1A; unplug and re-plug the card to load it' }; $mj }))
       }
       return (($plan + "(read-only - nothing was written)" + (DJ $mj)) -join "`r`n")
     }
     'efuse.py' {
-      $plan = @("append point (dword-aligned): 0x18 (dwaddr 0x6)","current dword @0x18 = 0xFFFFFFFF",
-        "record to write: 40 CF DB 03  (0xCFDB = 0x03)","dword to write @0x18: 0x03DBCF40","after burn 0x18..0x1B = 40 CF DB 03, then 0x1C=0xFF (0xFF=EOL)")
-      $ej = @{ tool='efuse'; result='ready'; plan=@{ at=0x18; dwaddr=6; current=0xFFFFFFFF; dword=0x03DBCF40; record='40 CF DB 03'; free=$true; gap=$false } }
+      $plan = @("append point (dword-aligned): 0x20 (dwaddr 0x8)","current dword @0x20 = 0xFFFFFFFF",
+        "record to write: 40 CF DB 03  (0xCFDB = 0x03)","dword to write @0x20: 0x03DBCF40","after burn 0x20..0x23 = 40 CF DB 03, then 0x24=0xFF (0xFF=EOL)")
+      $ej = @{ tool='efuse'; result='ready'; plan=@{ at=0x20; dwaddr=8; current=0xFFFFFFFF; dword=0x03DBCF40; record='40 CF DB 03'; free=$true; gap=$false } }
       if ($argline -like '*--burn*') {
         $ej.result = 'ok'; $ej.read_back = 0x03DBCF40
-        return (($plan + "=== BURN (irreversible) ===" + "read-back @0x18 = 0x03DBCF40" + "RESULT: OK, matches" + (DJ $ej)) -join "`r`n")
+        return (($plan + "=== BURN (irreversible) ===" + "read-back @0x20 = 0x03DBCF40" + "RESULT: OK, matches" + (DJ $ej)) -join "`r`n")
       }
       return (($plan + "=== DRY RUN: nothing written. Add --burn to write. ===" + (DJ $ej)) -join "`r`n")
     }

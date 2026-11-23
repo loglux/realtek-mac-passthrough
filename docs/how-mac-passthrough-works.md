@@ -53,8 +53,9 @@ Where the values come from:
   setting records stored in the chip's efuse (one-time-programmable memory), which overwrite it.
   That is why it can be changed by burning a record into the efuse — what RtlPassthru does
   (`0xCFDB = 0x03`, both bits).
-- **`USB_MISC_0` / `USB_MISC_1`** are set at the factory. RtlPassthru reads them but does not change
-  them.
+- **`USB_MISC_0` / `USB_MISC_1`** come from the chip itself at the factory — and, like `0xCFDB`, an
+  efuse record can set them on top at power-on. On a plain RTL8153 RtlPassthru burns one such record,
+  `USB_MISC_0 = 0x1000` (the *-AD* marker), to enable Linux.
 
 Where the names come from:
 
@@ -170,9 +171,12 @@ So:
 - **Windows and pre-boot** need bit 1 of `0xCFDB` on any Realtek chip. That is what RtlPassthru
   burns (it writes `0x03`, so bit 0 is set too).
 - **Linux** needs the `USB_MISC` values to match one of its variants, and on an `-AD` match also
-  bit 0. RtlPassthru does not change the `USB_MISC` values.
+  bit 0. On a plain RTL8153 that already has bit 0, RtlPassthru burns the *-AD* marker
+  (`USB_MISC_0 = 0x1000`).
 
 Confirmed on hardware: our RTL8156 reads `USB_MISC_0 = 0x1000`, so Linux's *-AD* test matches it;
 after burning `0xCFDB = 0x03` it took the laptop's MAC in Windows, at Dell pre-boot and on Ubuntu
 (`r8152 … Using pass-thru MAC addr`). An RTL8153 adapter with `USB_MISC_0 = 0x0000` and no BND/BD bit
-kept its own MAC on Ubuntu, exactly as the code above says.
+kept its own MAC on Ubuntu, exactly as the code above says. An RTL8153E dongle in the same state took
+the laptop's MAC on Ubuntu once the *-AD* marker was burned into its efuse: after a re-plug its
+`USB_MISC_0` read `0x1000`, and `r8152` logged *"Using pass-thru MAC addr"*.

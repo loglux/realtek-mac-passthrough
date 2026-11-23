@@ -2,7 +2,8 @@
 
 **Thunderbolt and USB-C docks, and USB Ethernet dongles, often use a Realtek chip for their wired
 network. Some ship with MAC Address Pass-Through switched off. RtlPassthru shows where pass-through
-works on your adapter — Windows, pre-boot, Linux — and, on RTL8156 chips, switches it on.**
+works on your adapter — Windows, pre-boot, Linux — and switches it on where the chip lacks it:
+for Windows and pre-boot on RTL8156 docks, and for Linux on RTL8153 dongles.**
 
 When you dock a laptop, the dock's Ethernet port goes online under *its own* MAC address, not the
 laptop's. On corporate and campus networks that breaks things — access control, licensing, DHCP
@@ -64,7 +65,8 @@ for pass-through:
 | **Required value** | — | — | — | — | — | — | **1** | **1** |
 
 The other bits are not checked. `0xCFDB` is filled at every power-on: the chip's built-in default,
-then any setting records in its efuse on top. The `USB_MISC` registers are set at the factory.
+then any setting records in its efuse on top. The `USB_MISC` registers work the same way: the chip's
+own value from the factory, then any efuse record on top — which is how RtlPassthru enables Linux.
 
 Where the names come from — the chip itself holds only the numbers: **Windows driver** — its log
 messages *"Is AUX / RT MAC clone support system"* (`rtump64x64.sys`, `NIC_QuerySpecificHwCaps`);
@@ -88,18 +90,23 @@ and checked against it on a real RTL8156: for `0xCFDB = 0x03` it reports `MAC_CL
 `DOCKING = 00`.
 
 **What RtlPassthru does:** it reads these registers and shows, per system, whether pass-through will
-work. If bit 1 of `0xCFDB` is missing, it burns `0xCFDB = 0x03` (both bits) into the chip's efuse. It
-does not change the `USB_MISC` registers. Confirmed: a burned RTL8156 (its `USB_MISC_0` reads
-`0x1000`) takes the laptop's MAC in Windows, at Dell pre-boot and on Linux (Ubuntu).
+work, and offers the one fix that fits:
+
+- **Bit 1 of `0xCFDB` missing** — it burns `0xCFDB = 0x03` (both bits). Confirmed: a burned RTL8156
+  (its `USB_MISC_0` reads `0x1000`) takes the laptop's MAC in Windows, at Dell pre-boot and on Linux
+  (Ubuntu).
+- **Windows and pre-boot already work, Linux doesn't** (a plain RTL8153 with bit 0 set) — it burns the
+  "-AD" marker, `USB_MISC_0 = 0x1000`. Confirmed on an RTL8153E dongle: before, Linux kept the dongle's
+  own MAC; after, it logged *"Using pass-thru MAC addr"* and came up under the laptop's MAC.
 
 Each system's check, with the Linux code quoted, is in
 **[How MAC Pass-Through Works](docs/how-mac-passthrough-works.md)**.
 
 **Why it's a "burn".** The efuse is one-time-programmable (OTP) memory: each bit can be set once and
-never cleared. RtlPassthru doesn't edit anything that is there; it **appends one 4-byte record
-(`40 CF DB 03`) into blank space** right after the existing records, reads it back to verify, and the
-chip applies it at every power-on. Because it can't be undone, the tool always shows a **preview**
-first and writes only after you confirm.
+never cleared. RtlPassthru doesn't edit anything that is there; it **appends one small record into
+blank space** right after the existing records — `40 CF DB 03` for pass-through, `41 D8 1A 00 10` for
+the Linux marker — reads it back to verify, and the chip applies it at every power-on. Because it
+can't be undone, the tool always shows a **preview** first and writes only after you confirm.
 
 ---
 
@@ -130,6 +137,14 @@ comfortable with the process before touching an expensive dock.
 
 *An inexpensive USB-A 2.5G dongle with the same Realtek RTL8156 as the dock — a handy thing to try
 the process on first. Photo: AliExpress listing (linked above).*
+
+### Linux on a gigabit dongle
+
+The other common case is the other way round. A plain USB gigabit dongle with a late **RTL8153**
+(Realtek calls ours *RTL8153E*) already passed the laptop's MAC through in Windows and at pre-boot,
+straight out of the box — but **Linux kept the dongle's own MAC**: the Linux driver only accepts chips
+it recognises as "-AD", "-BND" or "-BD". RtlPassthru burned the "-AD" marker into the dongle's efuse,
+and after a re-plug Linux took the laptop's MAC as well.
 
 ---
 
@@ -182,12 +197,21 @@ Below the tiles, **one action card** offers what fits *this* card:
     bar shows it writing and verifying (the window can't be closed mid-write). Then **unplug and
     re-plug** it, so the chip reloads its efuse, and press **Rescan**. The Windows and pre-boot
     tiles should turn green — and Linux too, if the chip passes Linux's `USB_MISC` test.
-- **Nothing to do** — everything already works.
-- **Linux: not on this card** — Windows and pre-boot work, but the chip's `USB_MISC` registers fail
-  Linux's variant test (`-AD`, `-BND`, `-BD`) and it isn't a Lenovo device. Those registers are set at
-  the factory; the tool says so plainly rather than offering a fix it can't prove.
+- **Enable Linux** — Windows and pre-boot work, but Linux doesn't recognise the chip (a plain RTL8153).
+  The same two steps: **Preview** shows the record (`41 D8 1A 00 10`) and where it goes, then
+  **Burn -AD marker**. The data bytes are written first and the header that switches the record on
+  last, only if they all verified. **Re-plug** the dongle and press **Rescan** — the Linux tile turns
+  green.
 
-  ![Linux not on this card](docs/img/05-linux-not-on-this-card.png)
+  ![Enable Linux](docs/img/05-enable-linux.png)
+
+  In Linux the interface may get a new name: a name like `enx00e04c…` is built from the dongle's own
+  MAC, which it no longer uses. If your network settings refer to the interface by that name, update
+  them after the burn.
+- **Nothing to do** — everything already works.
+- **Linux: not on this card** — Windows and pre-boot work, but Linux doesn't recognise the chip and
+  this card isn't one the tool can mark (for example an RTL8156 without the "-AD" variant). The tool
+  says so plainly rather than offering a fix it can't prove.
 
 **Details ▾** opens a panel under the window with two tabs: *Markers & registers* (the exact chip, every
 register each system checks, and its value) and *Settings dump* — the chip's efuse in hex with its setting
@@ -197,9 +221,17 @@ all of it to a text file.
 
 The chip is identified the way Realtek's own tool does it — the same registers, the same tables — and
 shown with Realtek's name for it (for example *RTL8153UG* or *RTL8156BG*). The chip type decides how its
-efuse is read: Realtek uses three efuse protocols (*type 1*, *type 2 (dword)*, *type 3 (V3)*), and
-`RTL8153` alone comes with all three depending on the revision. Reading is proven on type 2 (RTL8156B)
-and type 3 (RTL8153UG) cards, byte for byte against Realtek's tool.
+efuse is read and written: Realtek uses three efuse protocols (*type 1*, *type 2 (dword)*, *type 3
+(V3)*), and `RTL8153` alone comes with all three depending on the revision. Reading matches Realtek's
+tool byte for byte on type 2 (RTL8156B) and type 3 (RTL8153UG, RTL8153E) cards; writing is proven on
+type 2 and type 3. On a type 1 chip the window warns before a burn that this protocol is not yet
+proven on hardware.
+
+The settings dump also tells a **factory** card from a **modified** one: Realtek's tool ends its
+programming with a stamp (its version), so any record after that stamp was added later — the dump
+lists it and names the ones RtlPassthru writes. A chip whose variant was changed by such a record is
+shown as what it is, for example *"RTL8153E (type 0x3106) + efuse record USB_MISC_0 (0xD81A) = 0x1000
+(not a factory value)"*.
 
 ![Details: settings dump](docs/img/04-efuse-decoded.png)
 
@@ -232,7 +264,9 @@ isn't tied to any one operating system:
 - **Windows** — the Realtek driver reads `0xCFDB`, derives `AUXMacType`, and clones the `_AUXMAC_` MAC.
 - **Linux** — the `r8152` driver applies the host MAC too, *when the chip passes its `USB_MISC` test*.
   Confirmed: our burned RTL8156 (`USB_MISC_0 = 0x1000`) came up under the laptop's MAC on Ubuntu,
-  while an RTL8153 with `USB_MISC_0 = 0x0000` and no BND/BD bit kept its own MAC.
+  while an RTL8153 with `USB_MISC_0 = 0x0000` and no BND/BD bit kept its own MAC — until we burned
+  the `USB_MISC_0 = 0x1000` record into its efuse: the chip applies it at power-on, and that RTL8153
+  then took the laptop's MAC too.
 
 Because the capability sits in the hardware, network boot already sees the laptop's identity — which
 is what makes this useful for imaging and deployment, not just day-to-day docking.
@@ -247,6 +281,8 @@ tests, and read the Linux driver's source for its gate.
 
 - The burn is a **one-time, irreversible (OTP)** write. **Rehearse on a spare first** — a cheap
   RTL8156 dongle is the ideal practice target before an expensive dock.
+- It refuses a chip it can't be sure about: a revision outside Realtek's tables, or a variant no
+  efuse record explains.
 - It only ever writes into confirmed-blank space, **never over factory data**, and reads the record
   back to verify it.
 - Keep the USB connection stable during the burn.
@@ -264,7 +300,9 @@ card-inspector.ps1     the window (PowerShell / WinForms)
 tools/                 Python backend:
   diag.py                read registers (REV, USB_MISC, 0xCFDB) and the per-system verdict
   settings.py            read-only settings dump: chip type, efuse (all three protocols) + SPI flash start
-  efuse.py               efuse dump / preview / burn (RTL8156-family efuse)
+  efuse.py               efuse dump / preview / burn of 0xCFDB (RTL8156-family efuse)
+  marker.py              preview / burn of the Linux "-AD" marker (RTL8153 family, all three protocols)
+  jsonout.py             the one machine-readable result line the window reads
   rtldiag.py             unified DLL layer (classifies + drives the Realtek library)
   passthru.py            which registers each system checks -> the verdict (unit-tested)
   storage.py             where the settings live (unit-tested)
@@ -288,6 +326,8 @@ python -I tools/settings.py {InterfaceGuid}         # settings dump: efuse recor
 python -I tools/efuse.py {InterfaceGuid}            # dump the efuse (RTL8156 family)
 python -I tools/efuse.py {InterfaceGuid} --plan     # preview: show what a burn would write
 python -I tools/efuse.py {InterfaceGuid} --burn     # burn 0xCFDB = 0x03   (irreversible)
+python -I tools/marker.py {InterfaceGuid} --plan    # preview: the Linux -AD marker on an RTL8153
+python -I tools/marker.py {InterfaceGuid} --burn    # burn USB_MISC_0 = 0x1000   (irreversible)
 python -I tools/dll_list.py                         # list / classify the Realtek DLLs found
 ```
 
