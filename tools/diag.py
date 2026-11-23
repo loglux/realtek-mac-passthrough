@@ -10,7 +10,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from rtldiag import RtlDiag
+from efuse_core import parse_autoload_records
+from rtldiag import EfuseUnavailable, RtlDiag
 from passthru import format_lines, verdict
 from storage import describe as describe_storage
 from jsonout import emit, wanted
@@ -30,6 +31,16 @@ def main(argv):
         m1 = c.usb_read(0xD81F, 1)
         cfdb = c.usb_read(0xCFDB, 1)
         info = c.chip_info()
+        if info["new_variant"] and not info["new_type"] and info["protocol"]:
+            # a variant outside Realtek's tables: an efuse record may have set it (e.g. the -AD marker) -
+            # read the efuse only then, to tell the chip itself from what a record made it report
+            c.pg_enter()
+            try:
+                info = c.chip_info(parse_autoload_records(c.efuse_area(info["protocol"], info["size"])))
+            except EfuseUnavailable:
+                pass
+            finally:
+                c.pg_leave()
         print(f"GUID {guid}")
         print(f"DLL {c.family} v{c.version} ({c.exports} procedures)  {c.path}")
         print(f"bcdDevice(REV) = 0x{rev:04X}")
@@ -52,7 +63,8 @@ def main(argv):
         if wanted(argv):
             emit({"tool": "diag", "guid": guid,
                   "dll": {"family": c.family, "version": c.version, "exports": c.exports, "path": c.path},
-                  "rev": rev, "chip": {k: info[k] for k in ("name", "type", "variant", "protocol", "new_chip")},
+                  "rev": rev, "chip": {k: info[k] for k in ("name", "type", "variant", "protocol", "new_chip",
+                                                      "overrides", "factory_variant")},
                   "usb_misc_0": m0, "usb_misc_1": m1, "cfdb": cfdb, "linux_variant": v["variant"],
                   "layers": {k: {"ok": v[k][0], "why": v[k][1]} for k in ("Windows", "PXE", "Linux")},
                   "storage": storage})

@@ -269,14 +269,104 @@ def efuse_protocol(ctype: int):
     return None, 0
 
 
-def chip_name(ctype: int, variant: int = 0, new_chip: bool = False) -> str:
-    """'RTL8153UG (type 0x3106)' - Realtek's name when the variant is known, its type number always."""
+# Realtek's tool never gives the last bytes of the area to records: the write counter and spare room live there.
+# Its capacity (2.0.19 FUN_140073b1a area, field +0x967d8) is 0xBA / 0xCA / 0x508 for the three protocols, and its
+# "EFuse Remain N Bytes" = capacity - used: checked on two V3 cards (UGREEN 178, RTL8153E dongle 176).
+EFUSE_RESERVED = {EFUSE_OLD: 6, EFUSE_V3: 6, EFUSE_DWORD: 8}
+
+
+def efuse_capacity(kind: str, size: int) -> int:
+    """Bytes records may use, as Realtek's tool counts them: the area minus its reserved tail."""
+    return size - EFUSE_RESERVED.get(kind, 0)
+
+
+def chip_name(ctype: int, variant: int = 0, new_type: bool = False, new_variant: bool = False) -> str:
+    """'RTL8153UG (type 0x3106)' - Realtek's name when the variant is known, its type number always.
+    new_type = the chip revision is outside Realtek's tables, new_variant = the variant registers hold a
+    combination its tables do not list for this type."""
     if not ctype:
         return "unknown Realtek chip"
     name = variant_name(variant) or {0x10: "RTL8152", 0x20: "RTL8152", 0x30: "RTL8153", 0x31: "RTL8153B",
                                      0x32: "RTL8153C", 0x40: "RTL8156", 0x41: "RTL8156B", 0x50: "RTL8157",
                                      0x60: "RTL8159"}.get(ctype >> 8, "Realtek")
-    return f"{name} (type 0x{ctype:04X}" + (", a revision not in Realtek's tables)" if new_chip else ")")
+    note = (", a revision not in Realtek's tables" if new_type else
+            ", a variant not in Realtek's tables" if new_variant else "")
+    return f"{name} (type 0x{ctype:04X}{note})"
+
+
+# --- Identification against the efuse: which values are the chip's own and which an efuse record set ---
+# The registers Realtek's identification reads, as (space, address, bytes). The TYPE registers name the chip
+# and with it the efuse protocol. The VARIANT registers pick the variant inside a type - and an efuse record
+# can set them at power-on (proven: our 41 D8 1A 00 10 turned USB_MISC_0 from 0x0000 into 0x1000 on an
+# RTL8153E). A record over a variant register is therefore not the factory value. The chip keeps no copy of
+# the value underneath, so the factory variant is worked out with 0 in the bytes a record covers - what every
+# card without such a record has shown (WAVLINK, UGREEN, the RTL8153E dongle before its marker).
+ID_TYPE_REGS = {"e612": ("pla", 0xE612, 2), "cd14": ("usb", 0xCD14, 1), "dc48": ("pla", 0xDC48, 2),
+                "d8a0": ("usb", 0xD8A0, 1)}
+ID_VARIANT_REGS = {"misc0": ("usb", 0xD81A, 2), "d81e": ("usb", 0xD81E, 2), "dc00": ("pla", 0xDC00, 1),
+                   "c340": ("usb", 0xC340, 1), "c2ac": ("usb", 0xC2AC, 2)}
+ID_REG_LABELS = {"misc0": "USB_MISC_0 (0xD81A)", "d81e": "USB_MISC_1 (0xD81F)", "dc00": "PLA 0xDC00",
+                 "c340": "USB 0xC340", "c2ac": "USB 0xC2AC", "e612": "PLA 0xE612", "cd14": "USB 0xCD14",
+                 "dc48": "PLA 0xDC48", "d8a0": "USB 0xD8A0"}
+
+
+def efuse_id_writes(recs: list, regs: dict) -> dict:
+    """Which of `regs` the efuse records write: {name: {'mask': bytes covered (bit per byte), 'value': what the
+    records put there, last record wins}}. Registers no record touches are left out."""
+    out = {}
+    for name, (space, addr, n) in regs.items():
+        mask = value = 0
+        for r in recs:
+            if r["kind"] != "reg" or r.get("space") != space:
+                continue
+            for i, b in enumerate(r["data"]):
+                k = r["reg"] + i - addr
+                if 0 <= k < n:
+                    mask |= 1 << k
+                    value = (value & ~(0xFF << 8 * k)) | (b << 8 * k)
+        if mask:
+            out[name] = {"mask": mask, "value": value}
+    return out
+
+
+def _clear_bytes(v: int, mask: int) -> int:
+    for k in range(4):
+        if mask >> k & 1:
+            v &= ~(0xFF << 8 * k)
+    return v
+
+
+def identify(regs: dict, recs=None) -> dict:
+    """Realtek's identification from live register values (`regs` by the names in ID_TYPE_REGS /
+    ID_VARIANT_REGS; missing ones count as 0), checked against the efuse records `recs` when given.
+
+    type / protocol / size come from the type registers alone. variant / name are what the chip reports now
+    (what drivers see). When a record sets a variant register, `overrides` lists it, and factory_variant /
+    factory_name are the variant without it. `new_chip` = something genuinely outside Realtek's tables: an
+    unknown revision, or a variant combination no efuse record explains. `writable` = safe to burn: the type
+    and protocol are known and no record touches the type registers."""
+    g = lambda k: regs.get(k, 0)   # noqa: E731
+    ctype, new_t = chip_type(g("e612"), cd14=g("cd14"), dc48=g("dc48"), d8a0=g("d8a0"))
+    args = lambda v: (ctype, v["misc0"], v["d81e"], v["dc00"], v["c340"], v["c2ac"])   # noqa: E731
+    live = {k: g(k) for k in ID_VARIANT_REGS}
+    variant, new_v = chip_variant(*args(live))
+    kind, size = efuse_protocol(ctype)
+    type_written = sorted(efuse_id_writes(recs, ID_TYPE_REGS)) if recs else []
+    over = efuse_id_writes(recs, ID_VARIANT_REGS) if recs else {}
+    fvar, fnew = variant, new_v
+    if over:
+        fvar, fnew = chip_variant(*args({k: _clear_bytes(v, over[k]["mask"]) if k in over else v
+                                         for k, v in live.items()}))
+    new_chip = bool(new_t or not ctype or (fnew if over else new_v))
+    name = chip_name(ctype, fvar if over else variant, new_t, fnew if over else new_v)
+    if over:
+        name += " + efuse record " + ", ".join(f"{ID_REG_LABELS[k]} = 0x{live[k]:0{2 * ID_VARIANT_REGS[k][2]}X}"
+                                              for k in over) + " (not a factory value)"
+    return {"type": ctype, "variant": variant, "new_type": new_t, "new_variant": new_v, "new_chip": new_chip,
+            "name": name, "protocol": kind, "size": size,
+            "overrides": {k: v["value"] for k, v in over.items()}, "factory_variant": fvar,
+            "factory_name": variant_name(fvar), "type_written": type_written,
+            "writable": bool(kind) and not new_chip and not type_written}
 
 PG_STAMP_REGS = (0xD3A0, 0xE818)   # Realtek's tool leaves its own and its CFG version here (RTL8156 / RTL8153B)
 
@@ -410,7 +500,8 @@ def parse_autoload_records(data: bytes) -> list:
             if i + 3 + ln > n:
                 break
             recs.append({"at": i, "kind": "reg", "reg": int.from_bytes(data[i + 1:i + 3], "big"),
-                         "data": bytes(data[i + 3:i + 3 + ln]), "size": 3 + ln})
+                         "data": bytes(data[i + 3:i + 3 + ln]), "size": 3 + ln,
+                         "space": "pla" if t == 0x20 else "usb"})
             i += 3 + ln
         elif t == 0xE0:
             ln = (hdr & 0x0F) + 1

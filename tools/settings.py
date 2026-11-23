@@ -14,8 +14,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, describe_pg_stamp, parse_autoload_records,
-                        variant_name)
+from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, describe_pg_stamp, efuse_capacity,
+                        parse_autoload_records, variant_name)
 from passthru import chip_variant as linux_variant
 from rtldiag import EfuseUnavailable, RtlDiag
 from storage import flash_name, has_flash
@@ -77,9 +77,10 @@ def _records(recs):
         print(f"  => 0xCFDB ends up as 0x{regs[0xCFDB][-1]:02X} (the last record wins)")
 
 
-def _summary(recs, data, start, store, counter_at=None, misc=None):
+def _summary(recs, data, start, store, counter_at=None, misc=None, capacity=None):
     """Plain-language reading of a dump: what is records, what is empty space, and the write counter (the last
-    byte of the efuse area: Realtek's tool burns one bit of it per programming session)."""
+    byte of the efuse area: Realtek's tool burns one bit of it per programming session). `capacity` = where
+    Realtek's reserved tail starts: free space is counted up to it, as its tool does."""
     end = recs[-1]["at"] + recs[-1]["size"] if recs else start
     print("in plain words:")
     if recs:
@@ -94,8 +95,13 @@ def _summary(recs, data, start, store, counter_at=None, misc=None):
     free_to = (others[0][0] if others else len(data)) - 1
     if counted:
         free_to = min(free_to, counter_at - 1)
+    tail = counted and capacity is not None and end <= capacity <= counter_at
+    if tail:
+        free_to = min(free_to, capacity - 1)
     if end <= free_to:
         print(f"  0x{end:03X}-0x{free_to:03X}  all FF = empty: never written ({free_to - end + 1} bytes free; FF is the blank state)")
+    if tail and capacity < counter_at:
+        print(f"  0x{capacity:03X}-0x{counter_at - 1:03X}  reserved by Realtek's tool - never used for records")
     if counted:
         n = 8 - bin(data[counter_at]).count("1")
         print(f"  0x{counter_at:03X}        {data[counter_at]:02X} = write counter: {n} programming session(s) by Realtek's tool "
@@ -109,6 +115,9 @@ def _summary(recs, data, start, store, counter_at=None, misc=None):
         print("  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records")
         if misc:
             print(f"               (USB_MISC_0 = 0x{misc[0]:04X}, USB_MISC_1 = 0x{misc[1]:02X}: {misc[2]})")
+    elif misc:
+        print("  USB_MISC record - not a factory value: the chip applies it over its own chip-variant value")
+        print(f"               (now USB_MISC_0 = 0x{misc[0]:04X}, USB_MISC_1 = 0x{misc[1]:02X}: {misc[2]})")
 
 
 def main(argv):
@@ -126,12 +135,7 @@ def main(argv):
 
         info = c.chip_info()
         m0, m1 = c.usb_read(0xD81A, 2), c.usb_read(0xD81F, 1)
-        lin = linux_variant(m0, m1)
-        realtek = variant_name(info["variant"])
-        misc = (m0, m1, (f'Linux sees "-{lin}"' if lin else 'Linux sees a plain chip')
-                + (f', Realtek calls it {realtek}' if realtek else ''))
         kind, size = info["protocol"], info["size"]
-        print(f"CHIP {info['name']}")
         efuse, proto = None, ""
         c.pg_enter()
         try:
@@ -150,18 +154,27 @@ def main(argv):
         finally:
             c.pg_leave()
 
+        recs = parse_autoload_records(efuse) if efuse is not None else None
+        if recs is not None:
+            info = c.chip_info(recs)               # tells factory values from ones an efuse record set
+        lin = linux_variant(m0, m1)
+        realtek = variant_name(info["factory_variant"] if info["overrides"] else info["variant"])
+        misc = (m0, m1, (f'Linux sees "-{lin}"' if lin else 'Linux sees a plain chip')
+                + (f', Realtek calls the chip itself {realtek}' if realtek and info["overrides"] else
+                   f', Realtek calls it {realtek}' if realtek else ''))
+        print(f"CHIP {info['name']}")
         print("STORAGE efuse = " + (f"responding ({proto})" if efuse is not None else
               "could not be read - chip type not known to this tool, or the controller did not answer"))
         print("STORAGE flash = " + (f"{flash_name(jedec)} - holds the driver install disk, not chip settings"
                                     if flash is not None else "none"))
 
-        if efuse is not None:
+        if efuse is not None and recs is not None:
             print(f"\n=== EFUSE ({len(efuse)} bytes - the whole address space, one-time programmable) ===")
             _hex(efuse)
             print("records:")
-            recs = parse_autoload_records(efuse)
             _records(recs)
-            _summary(recs, efuse, 0, "efuse", counter_at=size - 1 if size else None, misc=misc)
+            _summary(recs, efuse, 0, "efuse", counter_at=size - 1 if size else None, misc=misc,
+                     capacity=efuse_capacity(kind, size) if size else None)
         else:
             print("\nThe settings this chip applies at power-on live in its efuse, which could not be read here.")
         if flash is not None:

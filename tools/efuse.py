@@ -16,7 +16,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
-from efuse_core import build_record, find_append_point, parse_autoload_records, record_dword
+from efuse_core import (EFUSE_DWORD, build_record, efuse_capacity, find_append_point, parse_autoload_records,
+                        record_dword)
 from jsonout import emit, wanted
 from rtldiag import EfuseUnavailable, RtlDiag
 
@@ -98,6 +99,13 @@ def main(argv):
             if not ap["free"]:
                 print("!! append point is NOT free (not 0xFFFFFFFF) - BURN ABORTED for safety.")
                 res["result"] = "not_free"
+                return 1
+            cap = efuse_capacity(EFUSE_DWORD, 0x510)
+            if ap["append"] + 4 > cap:
+                # Realtek's tool keeps the tail of the area (write counter + spare) out of records
+                print(f"!! the record would reach past 0x{cap - 1:X}, into Realtek's reserved tail (0x{cap:X}-0x50F)"
+                      " - BURN ABORTED for safety.")
+                res["result"] = "full"
                 return 1
             if res["plan"]["gap"]:
                 # the records end mid-dword: a dword-aligned record would sit behind FF bytes, and FF ends the

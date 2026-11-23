@@ -13,9 +13,9 @@ import os
 import struct
 from ctypes import wintypes
 
-from efuse_core import (byte_enable, chip_name, chip_type, chip_variant, efuse_protocol,  # noqa: E402
+from efuse_core import (EFUSE_OLD, EFUSE_V3, ID_TYPE_REGS, ID_VARIANT_REGS, byte_enable,  # noqa: E402
                         efuse8153_decode_read, efuse8153_encode_write, efuse8153_write_word,
-                        efuse_v3_write_command)
+                        efuse_v3_write_command, identify)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(os.path.dirname(_HERE))   # CardInspector/tools -> CardInspector -> repo root
@@ -478,19 +478,28 @@ class RtlDiag:
         """User efuse of an older-family chip (RTUNicPG reads 192 bytes for RTL8153B)."""
         return bytes(self.efuse8153_read_byte(a) for a in range(nbytes))
 
-    def chip_info(self):
-        """Realtek's chip identification (efuse_core): type, variant code, name, efuse protocol and size, and
-        whether it is a revision outside Realtek's tables. Reads registers only."""
+    def chip_info(self, recs=None):
+        """Realtek's chip identification (efuse_core.identify): type, variant, name, efuse protocol and size.
+        Reads registers only; pass the efuse records (`recs`) to tell factory values from ones a record set."""
         pla = lambda r, n=2: int.from_bytes(self.dread(r, n), "little")   # noqa: E731
         usb = (lambda r, n=2: self.usb_read(r, n)) if self._USBRd is not None else (lambda r, n=2: 0)
-        e612 = pla(0xE612)
-        ctype, new_t = chip_type(e612, cd14=usb(0xCD14, 1), dc48=pla(0xDC48), d8a0=usb(0xD8A0, 1))
-        variant, new_v = chip_variant(ctype, usb(0xD81A), usb(0xD81E), dc00=pla(0xDC00, 1),
-                                      c340=usb(0xC340, 1), c2ac=usb(0xC2AC))
-        new = new_t or new_v or not ctype
-        kind, size = efuse_protocol(ctype)
-        return {"e612": e612, "type": ctype, "variant": variant, "new_chip": new,
-                "name": chip_name(ctype, variant, new), "protocol": kind, "size": size}
+        regs = {name: (pla if space == "pla" else usb)(addr, n)
+                for name, (space, addr, n) in {**ID_TYPE_REGS, **ID_VARIANT_REGS}.items()}
+        info = identify(regs, recs)
+        info["e612"] = regs["e612"]
+        return info
+
+    def efuse_area(self, kind, size):
+        """The whole efuse area by its protocol (call inside pg_enter / pg_leave)."""
+        if kind == EFUSE_OLD:
+            return self.efuse8153_dump(size)
+        if kind == EFUSE_V3:
+            return self.efuse_v3_dump(size)
+        self.efuse_enable()
+        try:
+            return self.efuse_dump(size)
+        finally:
+            self.efuse_disable()
 
     def chip_type(self):
         """Realtek's chip type alone (0 if the family is unknown)."""

@@ -11,11 +11,14 @@ last record (no FF gap - FF ends the records). The chip applies it at power-on, 
 The chip type picks the efuse protocol, the way Realtek's own tool does:
   type 1          byte by byte, 0xDD00 with Realtek's bit rotation          - not yet proven on hardware
   type 2 (dword)  four bytes at a time through 0xDD04                       - proven (the 0xCFDB burn, RTL8156)
-  type 3 (V3)     byte by byte, 0xDD00 with prepare / write / finish bits   - not yet proven on hardware
+  type 3 (V3)     byte by byte, 0xDD00 with prepare / write / finish bits   - proven (this marker, RTL8153E)
 Safe order: everything after the header byte is burned first while the header is still 0xFF - to the chip a
 0xFF header means "no more records", so it is invisible. Each write is read back; only if all are right is the
 header burned, last. A mismatch before that leaves the card behaving exactly as before.
-A chip revision outside Realtek's tables is refused, as Realtek's tool refuses it.
+Refused: a chip revision outside Realtek's tables (its efuse protocol is not known), an efuse record over a
+register the type is read from, and a variant outside Realtek's tables that no efuse record explains. A
+variant that is only unusual because an efuse record set it (e.g. this marker) is not refused: the type, and
+with it the protocol, stays known.
 With --json the last line is JSON {...} (what the GUI reads); 'STEP = ...' lines drive its progress bar.
 """
 import os
@@ -24,14 +27,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling modules import under `python -I`
 
 from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, build_record_bytes,  # noqa: E402
-                        efuse8153_encode_write, efuse8153_write_word, efuse_v3_write_command,
+                        efuse8153_encode_write, efuse8153_write_word, efuse_capacity, efuse_v3_write_command,
                         parse_autoload_records, record_dword_writes)
 from passthru import AD_MASK, AD_VALUE  # noqa: E402
 from jsonout import emit, wanted  # noqa: E402
 from rtldiag import EfuseUnavailable, RtlDiag  # noqa: E402
 
 REG, VALUE = 0xD81A, 0x1000          # USB_MISC_0 = 0x1000: r8152 sees an RTL8153-AD
-PROVEN = {EFUSE_DWORD: True, EFUSE_OLD: False, EFUSE_V3: False}   # burned and verified on a real card?
+PROVEN = {EFUSE_DWORD: True, EFUSE_OLD: False, EFUSE_V3: True}    # burned and verified on a real card?
 
 
 OUT: dict = {"tool": "marker", "plan": {}, "burn": {}}   # what --json emits at the end
@@ -53,18 +56,6 @@ def step(text):
     print(f"STEP = {text}", flush=True)
 
 
-def _read_area(c, kind, size):
-    if kind == EFUSE_OLD:
-        return c.efuse8153_dump(size)
-    if kind == EFUSE_V3:
-        return c.efuse_v3_dump(size)
-    c.efuse_enable()
-    try:
-        return c.efuse_dump(size)
-    finally:
-        c.efuse_disable()
-
-
 def plan(c):
     """Every check. Returns a plan dict when a burn may go ahead, else None."""
     m0 = c.usb_read(REG, 2)
@@ -78,17 +69,28 @@ def plan(c):
         return None
     info = c.chip_info()
     kind, size = info["protocol"], info["size"]
-    print(f"CHIP {info['name']}, efuse protocol = {kind or 'unknown'}")
-    OUT["chip"] = {k: info[k] for k in ("name", "type", "variant", "protocol", "new_chip")}
-    if kind is None or info["new_chip"]:
-        plan_result("REFUSED", "a chip revision outside Realtek's tables - its own tool refuses it too")
+    if kind is None or info["new_type"]:
+        print(f"CHIP {info['name']}, efuse protocol = {kind or 'unknown'}")
+        plan_result("REFUSED", "a chip revision outside Realtek's tables - its efuse protocol is not known")
         return None
     try:
-        area = _read_area(c, kind, size)
+        area = c.efuse_area(kind, size)
     except EfuseUnavailable as e:
         plan_result("REFUSED", f"the efuse could not be read: {e}")
         return None
     recs = parse_autoload_records(area)
+    info = c.chip_info(recs)                   # now telling factory values from ones an efuse record set
+    print(f"CHIP {info['name']}, efuse protocol = {kind}")
+    OUT["chip"] = {k: info[k] for k in ("name", "type", "variant", "protocol", "new_chip", "overrides",
+                                        "factory_variant", "type_written")}
+    if info["type_written"]:
+        plan_result("REFUSED", "an efuse record writes a register the chip type is read from ("
+                    + ", ".join(info["type_written"]) + ") - the type, and with it the protocol, is not certain")
+        return None
+    if not info["writable"]:
+        plan_result("REFUSED", "a chip variant outside Realtek's tables that no efuse record explains - "
+                               "its own tool refuses it too")
+        return None
     at = recs[-1]["at"] + recs[-1]["size"] if recs else 0
     rec = build_record_bytes(REG, VALUE.to_bytes(2, "little"))
     print(f"EFUSE = {size} bytes ({kind} protocol), records = {len(recs)}, non-FF bytes = {sum(b != 0xFF for b in area)}")
@@ -101,8 +103,10 @@ def plan(c):
         plan_result("BLOCKED", "the records end in a type this tool cannot size - cannot tell where they stop")
         return None
     end = at + len(rec)                        # this byte must stay FF: it ends the records after ours
-    if end >= size - 1 or any(b != 0xFF for b in area[at:end + 1]):
-        plan_result("BLOCKED", f"no blank room at 0x{at:02X} for {len(rec)} bytes + end marker before the write counter")
+    cap = efuse_capacity(kind, size)           # Realtek's tool keeps the tail (write counter + spare) out of records
+    if end >= cap or any(b != 0xFF for b in area[at:end + 1]):
+        plan_result("BLOCKED", f"no blank room at 0x{at:02X} for {len(rec)} bytes + end marker before Realtek's "
+                               f"reserved tail (0x{cap:02X}-0x{size - 1:02X})")
         return None
     print(f"PLAN record = {rec.hex(' ').upper()}  (USB_MISC_0 = 0x{VALUE:04X}, the -AD marker)")
     print(f"PLAN at = 0x{at:02X}")

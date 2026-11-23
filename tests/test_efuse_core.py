@@ -170,6 +170,67 @@ def test_chip_variants():
     assert ec.chip_variant(0x4102, 0x1000, 0x0200) == (0x508, False) and ec.variant_name(0x508) == "RTL8156BGH"
     assert ec.chip_variant(0x5001, 0, 0) == (0xA01, False) and ec.variant_name(0xA01) == "RTL8157"
     assert ec.chip_name(0x3106, 0x216, True) == "RTL8153E (type 0x3106, a revision not in Realtek's tables)"
+    assert ec.chip_name(0x3106, 0x216, False, True) == "RTL8153E (type 0x3106, a variant not in Realtek's tables)"
+
+
+# The RTL8153E dongle (Amazon, 23.11.2026): records read by Realtek's tool 2.0.19 and by ours byte for byte,
+# then our -AD marker 41 D8 1A 00 10 burned at 0x1A through the GUI; after a re-plug USB_MISC_0 read 0x1000.
+DONGLE_EFUSE = bytes.fromhex(
+    "25 c0 00 00 e0 4c 68 0d 9e 21 dd 90 87 78 41 c0"
+    "54 0d 31 23 e8 18 18 02 05 04") + b"\xff" * (0xCF - 0x1A) + b"\xfe"
+DONGLE_EFUSE_AD = DONGLE_EFUSE[:0x1A] + bytes.fromhex("41d81a0010") + DONGLE_EFUSE[0x1F:]
+# read from the card: same type as UGREEN (0x3106); USB_MISC_1 = 0x10 -> 0xD81E = 0x1000; before the marker
+DONGLE_REGS = {"e612": 0x6310, "cd14": 0x12, "misc0": 0x0000, "d81e": 0x1000}
+
+
+def test_identify_plain_cards_unchanged():
+    # no record over a variant register: the same answer as before, and safe to write
+    u = ec.identify({"e612": 0x6310, "cd14": 0x12, "misc0": 0, "d81e": 0x4000}, ec.parse_autoload_records(UGREEN_EFUSE))
+    assert (u["type"], u["variant"], u["new_chip"], u["writable"]) == (0x3106, 0x220, False, True)
+    assert u["name"] == "RTL8153UG (type 0x3106)" and u["overrides"] == {}
+    d = ec.identify(DONGLE_REGS, ec.parse_autoload_records(DONGLE_EFUSE))
+    assert (d["variant"], d["name"], d["writable"]) == (0x216, "RTL8153E (type 0x3106)", True)
+    # WAVLINK: USB_MISC_0 = 0x1000 is its factory value - its records sit next to it (0xCFDC, 0xD822), not over it
+    w = ec.identify({"e612": 0x7410, "misc0": 0x1000},
+                    ec.parse_autoload_records(bytes.fromhex("42cfdc20006441d82298b3ff")))
+    assert (w["variant"], w["name"], w["overrides"], w["writable"]) == (0x502, "RTL8156BG (type 0x4102)", {}, True)
+
+
+def test_identify_marker_is_not_a_new_chip():
+    regs = dict(DONGLE_REGS, misc0=0x1000)               # what the chip reports after the marker
+    # registers alone: a variant Realtek's tables do not list -> refused, as before
+    alone = ec.identify(regs)
+    assert alone["new_chip"] and not alone["writable"]
+    assert alone["name"] == "RTL8153E (type 0x3106, a variant not in Realtek's tables)"
+    # with the efuse: the record explains it - the chip itself is an RTL8153E, the type and protocol are known
+    i = ec.identify(regs, ec.parse_autoload_records(DONGLE_EFUSE_AD))
+    assert i["overrides"] == {"misc0": 0x1000} and i["factory_variant"] == 0x216 and i["factory_name"] == "RTL8153E"
+    assert not i["new_chip"] and i["writable"] and i["protocol"] == ec.EFUSE_V3
+    assert i["name"] == "RTL8153E (type 0x3106) + efuse record USB_MISC_0 (0xD81A) = 0x1000 (not a factory value)"
+    assert i["variant"] == 0x216 and i["new_variant"]    # what the chip reports now stays visible
+
+
+def test_identify_marker_keeps_the_real_variant():
+    # the same marker on a UGREEN: the chip itself stays "RTL8153UG", not the type's fallback "RTL8153E"
+    recs = ec.parse_autoload_records(UGREEN_EFUSE[:0x18] + bytes.fromhex("41d81a0010") + UGREEN_EFUSE[0x1D:])
+    i = ec.identify({"e612": 0x6310, "cd14": 0x12, "misc0": 0x1000, "d81e": 0x4000}, recs)
+    assert i["factory_name"] == "RTL8153UG" and i["name"].startswith("RTL8153UG (type 0x3106) + efuse record")
+    assert i["writable"]
+
+
+def test_identify_unexplained_and_type_records_refused():
+    # a variant outside the tables with no record to explain it: still a new chip, not writable
+    i = ec.identify(dict(DONGLE_REGS, d81e=0x2000), ec.parse_autoload_records(DONGLE_EFUSE))
+    assert i["new_chip"] and not i["writable"]
+    # a record over a register the type is read from (USB 0xCD14): the type is not certain -> not writable
+    recs = ec.parse_autoload_records(bytes.fromhex("40cd1412") + b"\xff")
+    t = ec.identify(DONGLE_REGS, recs)
+    assert t["type_written"] == ["cd14"] and not t["writable"]
+    # a PLA record at the same address is a different register - not a match
+    assert ec.efuse_id_writes(ec.parse_autoload_records(bytes.fromhex("20d81a0010ff")), ec.ID_VARIANT_REGS) == {}
+    # the last record wins, byte by byte
+    two = ec.parse_autoload_records(bytes.fromhex("41d81a0010" "40d81a55") + b"\xff")
+    assert ec.efuse_id_writes(two, ec.ID_VARIANT_REGS) == {"misc0": {"mask": 3, "value": 0x1055}}
 
 def test_record_dword_writes():
     rec = bytes.fromhex("41d81a0010")
@@ -211,3 +272,13 @@ def test_parse_records_real_prefix():
     recs = ec.parse_autoload_records(real)
     assert recs[0]["reg"] == 0xCFDC and recs[0]["data"] == bytes([0x20, 0x00, 0x64])
     assert recs[1]["reg"] == 0xD822 and recs[1]["data"] == bytes([0x98, 0xB3])
+
+
+def test_efuse_capacity_matches_realtek_remain():
+    # Realtek's tool: "EFuse Remain N Bytes" = capacity - used; capacity leaves the area's tail (counter + spare) out
+    assert ec.efuse_capacity(ec.EFUSE_OLD, 0xC0) == 0xBA
+    assert ec.efuse_capacity(ec.EFUSE_V3, 0xD0) == 0xCA
+    assert ec.efuse_capacity(ec.EFUSE_DWORD, 0x510) == 0x508
+    # live readings with its 2.0.19: UGREEN records end at 0x18 -> 178, RTL8153E dongle at 0x1A -> 176
+    assert ec.efuse_capacity(ec.EFUSE_V3, 0xD0) - 0x18 == 178
+    assert ec.efuse_capacity(ec.EFUSE_V3, 0xD0) - 0x1A == 176
