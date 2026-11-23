@@ -387,6 +387,25 @@ OWN_RECORDS = {(0xCFDB, b"\x03"): "the pass-through bits RtlPassthru writes",
                (0xD81A, b"\x00\x10"): "the -AD marker RtlPassthru writes"}
 
 
+def place_records(area: bytes, recs: list, cap: int, new: list):
+    """Where `new` records (a list of bytes) go: back to back right after the last record, no FF gap (FF ends the
+    records). Returns [(at, record), ...], or an error text when they cannot go there safely: the records end in
+    a type that cannot be sized, or the room up to `cap` (Realtek's reserved tail) is not blank - the byte after
+    the last new record must stay FF too, it ends the records."""
+    if recs and recs[-1]["kind"] == "unknown":
+        return "the records end in a type this tool cannot size - cannot tell where they stop"
+    at = recs[-1]["at"] + recs[-1]["size"] if recs else 0
+    out = []
+    for r in new:
+        out.append((at, r))
+        at += len(r)
+    start = out[0][0] if out else at
+    if at >= cap or any(b != 0xFF for b in area[start:at + 1]):
+        return (f"no blank room at 0x{start:02X} for {at - start} bytes + end marker before Realtek's reserved tail "
+                f"(0x{cap:02X} on)")
+    return out
+
+
 def efuse_sessions(counter: int) -> int:
     """Programming sessions by Realtek's tool from the write-counter byte (one bit burned per session)."""
     return 8 - bin(counter & 0xFF).count("1")

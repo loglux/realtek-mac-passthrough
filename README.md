@@ -185,8 +185,8 @@ Each system checks different registers in the chip, so the tiles can differ.
 
 Below the tiles, **one action card** offers what fits *this* card:
 
-- **Enable pass-through** — when bit 1 of `0xCFDB` (the AUX bit) is not set (the red screenshot at the
-  top). Two steps:
+- **Enable pass-through** on an RTL8156 — when bit 1 of `0xCFDB` (the AUX bit) is not set (the red
+  screenshot at the top). Two steps:
   - **1 · Preview** — Preview reads the chip, finds the free slot in the efuse and shows the exact
     record it *would* write — **without touching anything.** The Burn button unlocks only after a
     successful preview.
@@ -197,11 +197,19 @@ Below the tiles, **one action card** offers what fits *this* card:
     bar shows it writing and verifying (the window can't be closed mid-write). Then **unplug and
     re-plug** it, so the chip reloads its efuse, and press **Rescan**. The Windows and pre-boot
     tiles should turn green — and Linux too, if the chip passes Linux's `USB_MISC` test.
-- **Enable Linux** — Windows and pre-boot work, but Linux doesn't recognise the chip (a plain RTL8153).
-  The same two steps: **Preview** shows the record (`41 D8 1A 00 10`) and where it goes, then
-  **Burn -AD marker**. The data bytes are written first and the header that switches the record on
-  last, only if they all verified. **Re-plug** the dongle and press **Rescan** — the Linux tile turns
-  green.
+- **Enable pass-through on an RTL8153** — the card ticks what this chip lacks, and you choose:
+  - **Windows + pre-boot** — `0xCFDB = 0x03` (`40 CF DB 03`);
+  - **Linux** — the "-AD" marker (`41 D8 1A 00 10`). Linux also needs bit 0 of `0xCFDB`, so on a chip
+    without it this box works only together with the first one.
+
+  Tick one, or both for **one burn and one re-plug**. **Preview** shows each record and where it
+  goes, then **Burn**. Per record the data bytes are written first and the header that switches it
+  on last, only if they all verified; if the second record stopped, the first is complete and in
+  effect. **Re-plug** the dongle and press **Rescan**.
+
+  ![Enable pass-through on an RTL8153](docs/img/05-enable-both.png)
+
+  A dongle that already works in Windows and at pre-boot gets just the Linux box:
 
   ![Enable Linux](docs/img/05-enable-linux.png)
 
@@ -301,7 +309,7 @@ tools/                 Python backend:
   diag.py                read registers (REV, USB_MISC, 0xCFDB) and the per-system verdict
   settings.py            read-only settings dump: chip type, efuse (all three protocols) + SPI flash start
   efuse.py               efuse dump / preview / burn of 0xCFDB (RTL8156-family efuse)
-  marker.py              preview / burn of the Linux "-AD" marker (RTL8153 family, all three protocols)
+  marker.py              preview / burn on the RTL8153 family: 0xCFDB = 0x03 and/or the Linux "-AD" marker
   jsonout.py             the one machine-readable result line the window reads
   rtldiag.py             unified DLL layer (classifies + drives the Realtek library)
   passthru.py            which registers each system checks -> the verdict (unit-tested)
@@ -326,8 +334,8 @@ python -I tools/settings.py {InterfaceGuid}         # settings dump: efuse recor
 python -I tools/efuse.py {InterfaceGuid}            # dump the efuse (RTL8156 family)
 python -I tools/efuse.py {InterfaceGuid} --plan     # preview: show what a burn would write
 python -I tools/efuse.py {InterfaceGuid} --burn     # burn 0xCFDB = 0x03   (irreversible)
-python -I tools/marker.py {InterfaceGuid} --plan    # preview: the Linux -AD marker on an RTL8153
-python -I tools/marker.py {InterfaceGuid} --burn    # burn USB_MISC_0 = 0x1000   (irreversible)
+python -I tools/marker.py {InterfaceGuid} --plan --records cfdb,ad   # RTL8153: preview 0xCFDB = 0x03 + the -AD marker
+python -I tools/marker.py {InterfaceGuid} --burn --records ad        # burn just the -AD marker   (irreversible)
 python -I tools/dll_list.py                         # list / classify the Realtek DLLs found
 ```
 

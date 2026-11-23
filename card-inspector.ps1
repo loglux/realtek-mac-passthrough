@@ -11,7 +11,7 @@
   -Screenshot <png> [-State red|green|plain|dry|details|efuse] saves one state to a PNG (implies -Demo).
 #>
 param([switch]$Demo, [string]$Screenshot = '',
-      [ValidateSet('red','green','plain','dry','efuse','details','adpreview','adburning','addone')][string]$State = 'red')
+      [ValidateSet('red','green','plain','dry','efuse','details','adpreview','adburning','addone','bothpreview')][string]$State = 'red')
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $ErrorActionPreference = 'Stop'
@@ -24,6 +24,7 @@ $DEMO_RED_GUID   = '{11111111-1111-1111-1111-111111111111}'
 $DEMO_GREEN_GUID = '{22222222-2222-2222-2222-222222222222}'
 $DEMO_PLAIN_GUID = '{33333333-3333-3333-3333-333333333333}'   # a plain RTL8153 with a driver-disk flash
 $script:demoAD = $false          # demo: has the -AD marker been "burned" into the plain RTL8153's efuse
+$script:demoBare = $false        # demo: the plain RTL8153 without the clone bits (0xCFDB = 0x00) - both records offered
 
 # ---------- theme ----------
 function rgb($r,$g,$b) { [Drawing.Color]::FromArgb($r,$g,$b) }
@@ -78,18 +79,18 @@ function Demo-Py($script, $argline) {
         $chip = if ($script:demoAD) {'RTL8153E (type 0x3106) + efuse record USB_MISC_0 (0xD81A) = 0x1000 (not a factory value)'} else {'RTL8153E (type 0x3106)'}
         return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
           "bcdDevice(REV) = 0x310D",("CHIP = $chip, efuse protocol = type 3 (V3)"),"  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x10",
-          "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1","  chip variant (r8152) = $var",
-          "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)",
-          "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)",
+          $(if ($script:demoBare) { "  0xCFDB EFUSE(PASS_THRU) = 0x00   bit0(RT-clone)=0  bit1(AUX-clone)=0" } else { "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1" }),"  chip variant (r8152) = $var",
+          $(if ($script:demoBare) { "PASSTHRU Windows = NO   (AUX-clone bit (0xCFDB bit1) is not set)" } else { "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)" }),
+          $(if ($script:demoBare) { "PASSTHRU PXE     = NO   (AUX-clone bit (0xCFDB bit1) is not set)" } else { "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)" }),
           "PASSTHRU Linux   = $lin",
           "  storage DC00 = 0x40   SPI flash ID = 85 60 15",
           "CONFIG STORAGE = efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings",
-          (DJ @{ tool='diag'; rev=0x310D; cfdb=3; usb_misc_0=$(if ($script:demoAD) {0x1000} else {0}); usb_misc_1=0x10
+          (DJ @{ tool='diag'; rev=0x310D; cfdb=$(if ($script:demoBare) {0} else {3}); usb_misc_0=$(if ($script:demoAD) {0x1000} else {0}); usb_misc_1=0x10
                  linux_variant=$(if ($script:demoAD) {'AD'} else {$null})
                  chip=@{ name=$chip; type=0x3106; variant=0x216; protocol='type 3 (V3)'; new_chip=$false }
                  dll=@{ family='Direct_API'; version='5.0.0.2'; exports=216; path='dll\new\RtlDirectDiagLib64.dll' }
-                 layers=@{ Windows=@{ ok=$true; why='AUX-clone bit (0xCFDB bit1) is set' }
-                           PXE=@{ ok=$true; why='both clone bits set - 0x03 verified at pre-boot on a Dell' }
+                 layers=@{ Windows=@{ ok=(-not $script:demoBare); why=$(if ($script:demoBare) {'AUX-clone bit (0xCFDB bit1) is not set'} else {'AUX-clone bit (0xCFDB bit1) is set'}) }
+                           PXE=@{ ok=(-not $script:demoBare); why=$(if ($script:demoBare) {'AUX-clone bit (0xCFDB bit1) is not set'} else {'both clone bits set - 0x03 verified at pre-boot on a Dell'}) }
                            Linux=@{ ok=[bool]$script:demoAD; why=($lin -replace '^\w+\s+\(|\)$','') } }
                  storage=@{ dc00=0x40; jedec='85 60 15'; text='efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings' } })) -join "`r`n")
       }
@@ -202,7 +203,13 @@ function Demo-Py($script, $argline) {
       return ($lines -join "`r`n")
     }
     'marker.py' {
-      $mj = @{ tool='marker'; burn=@{}; plan=@{ result='OK'; reason=''; record='41 D8 1A 00 10'; at=0x1A; protocol='type 3 (V3)'; proven=$true } }
+      $mj = @{ tool='marker'; burn=@{}; plan=@{ result='OK'; reason=''; record='41 D8 1A 00 10'; at=0x1A; protocol='type 3 (V3)'; proven=$true
+                                                   records=@(@{ name='ad'; record='41 D8 1A 00 10'; at=0x1A }) } }
+      if ($script:demoBare -and $argline -like '*cfdb,ad*') {
+        $mj.plan = @{ result='OK'; reason=''; record='40 CF DB 03  +  41 D8 1A 00 10'; at=0x1A; protocol='type 3 (V3)'; proven=$true
+                      records=@(@{ name='cfdb'; record='40 CF DB 03'; at=0x1A }, @{ name='ad'; record='41 D8 1A 00 10'; at=0x1E }) }
+        return ("PLAN record = 40 CF DB 03  at 0x1A`r`nPLAN record = 41 D8 1A 00 10  at 0x1E`r`nPLAN RESULT = OK`r`n(read-only - nothing was written)`r`n" + (DJ $mj))
+      }
       if ($script:demoAD) {
         $mj.plan = @{ result='NOT_NEEDED'; reason='the chip already reports the -AD marker' }
         return ("USB_MISC_0 now = 0x1000   0xCFDB now = 0x03`r`nPLAN RESULT = NOT NEEDED (the chip already reports the -AD marker)`r`n" + (DJ $mj))
@@ -417,6 +424,14 @@ $aBody   = New-Lbl $act '' 16 46 690 42 (F $FS_M) $C_TEXT
 $aNote   = New-Lbl $act '' 16 90 690 22 (F $FS_M) $C_MUTED
 $btnA1   = New-Btn $act 'Preview' 16 118 120 34
 $btnA2   = New-Btn $act 'Write'   146 118 160 34
+# "Enable pass-through" on an RTL8153-family card: what to burn - one record, or both in one burn
+function New-Chk($text, $y) {
+  $k = New-Object Windows.Forms.CheckBox; $k.Text = $text; $k.Location = New-Object Drawing.Point(326, $y)
+  $k.Size = New-Object Drawing.Size(380, 22); $k.Font = F $FS_M; $k.ForeColor = $C_TEXT; $k.Visible = $false
+  $act.Controls.Add($k); $k
+}
+$chkWin = New-Chk 'Windows + pre-boot    (0xCFDB = 0x03)' 112
+$chkLin = New-Chk 'Linux    (the -AD chip-variant marker)' 134
 
 # result banner: tinted background, coloured bar on the left, icon, bold headline + one detail line
 $aRes = New-Object Windows.Forms.Panel; $aRes.Location = '16,162'; $aRes.Size = '688,48'; $aRes.Visible = $false; $aRes.Tag = $C_ACCENT
@@ -532,6 +547,7 @@ function Show-Action($kind) {
   $aTitle.ForeColor = $C_TEXT; $aNote.Text = ''; $aNote.ForeColor = $C_MUTED; $aBody.Text = ''
   $d = $script:rpt
   Set-Btn $btnA1 '1   Preview' 'outline' $false $false; Set-Btn $btnA2 '' 'primary' $false $false
+  $script:syncing = $true; $chkWin.Visible = $false; $chkLin.Visible = $false; $script:syncing = $false
   switch ($kind) {
     'burn' {
       $all = $d.Variant -eq 'AD'
@@ -542,12 +558,18 @@ function Show-Action($kind) {
       Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $false
       Set-Result 'hint' 'Start with Preview' 'It checks the card and shows exactly what would be burned - nothing is written. Burn unlocks after it.'
     }
-    'adburn' {
-      $aTitle.Text = 'Enable Linux'
-      $aBody.Text = 'Burns the -AD chip-variant marker into the chip''s efuse, so the Linux r8152 driver accepts it. Windows and pre-boot are not affected.'
+    'enable' {
+      $nw = -not ($d.Bit1 -and $d.Bit0); $nl = [bool]$script:needLin      # 0xCFDB is only ever written whole, as 0x03
+      $aTitle.Text = if ($nw -and $nl) { 'Enable pass-through' } elseif ($nl) { 'Enable Linux' } else { 'Enable pass-through  (Windows and pre-boot)' }
+      $aBody.Text = if ($nw -and $nl) { 'Burns what you tick into the chip''s efuse. Both together: one burn, one re-plug.' }
+                    elseif ($nl) { 'Burns the -AD chip-variant marker into the chip''s efuse, so the Linux r8152 driver accepts it. Windows and pre-boot are not affected.' }
+                    else { 'Burns both clone bits into the chip''s efuse (0xCFDB = 0x03).' }
       $aNote.Text = ([char]0x26A0 + '  Permanent - efuse can be written once and never undone.'); $aNote.ForeColor = $C_RED
-      Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Btn $btnA2 '2   Burn -AD marker' 'danger' $false
-      Set-Result 'hint' 'Start with Preview' 'It checks the card and shows exactly what would be burned - nothing is written. Burn unlocks after it.'
+      $script:syncing = $true
+      $chkWin.Visible = $nw; $chkWin.Checked = $nw; $chkLin.Visible = $nl; $chkLin.Checked = $nl
+      $chkLin.Top = if ($nw) { 134 } else { 112 }
+      $script:syncing = $false
+      Sync-Choice
     }
     'ok' {
       $aTitle.Text = 'Nothing to do'; $aTitle.ForeColor = $C_GREEN
@@ -564,6 +586,32 @@ function Show-Action($kind) {
     }
     'reading' { $aTitle.Text = 'Reading the card...'; $aTitle.ForeColor = $C_MUTED }
   }
+}
+
+function Selected-Records {
+  @($(if ($chkWin.Visible -and $chkWin.Checked) { 'cfdb' }), $(if ($chkLin.Visible -and $chkLin.Checked) { 'ad' })) | Where-Object { $_ }
+}
+function Burn-Label {
+  $r = @(Selected-Records)
+  if ($r.Count -eq 2) { '2   Burn both' } elseif ($r -contains 'ad') { '2   Burn -AD marker' } else { '2   Burn AUX bit' }
+}
+function Sync-Choice {
+  # Linux needs 0xCFDB bit0 too: without it on the chip, the -AD marker only makes sense together with 0xCFDB = 0x03
+  if ($script:syncing) { return }
+  $script:syncing = $true
+  try {
+    $d = $script:rpt; $bit0 = $d -and $d.Bit0
+    if ($chkLin.Visible) {
+      $ok = $bit0 -or ($chkWin.Visible -and $chkWin.Checked)
+      $chkLin.Enabled = $ok; if (-not $ok) { $chkLin.Checked = $false }
+    }
+    $script:previewOk = $false
+    $any = @(Selected-Records).Count -gt 0
+    Set-Btn $btnA1 '1   Preview' 'outline' $any; Set-Btn $btnA2 (Burn-Label) 'danger' $false
+    if (-not $any) { Set-Result 'hint' 'Tick what to switch on' 'Then Preview shows exactly what would be burned.' }
+    elseif ($chkLin.Visible -and -not $chkLin.Enabled) { Set-Result 'hint' 'Start with Preview' 'Linux also needs 0xCFDB bit0, which this chip lacks - tick Windows + pre-boot to enable Linux too.' }
+    else { Set-Result 'hint' 'Start with Preview' 'It checks the card and shows exactly what would be burned - nothing is written. Burn unlocks after it.' }
+  } finally { $script:syncing = $false }
 }
 
 function Set-Busy([bool]$busy) {
@@ -614,17 +662,20 @@ function Read-Card {
             else { $d.Storage }
   $lblStore.Text = 'Settings stored in:  ' + $pretty
   $lin = $d.Layers.Contains('Linux') -and $d.Layers['Linux'].Val -eq 'YES'
-  # a plain RTL8153 with bit0 set: Linux only lacks the -AD marker, which marker.py can burn into its efuse
-  $ad8153 = ($d.Card.Pid -eq '8153') -and ($d.Variant -eq 'none') -and $d.Bit0
-  $kind = if (-not $d.Bit1) { 'burn' } elseif ($lin) { 'ok' } elseif ($ad8153) { 'adburn' } else { 'nolinux' }
+  # RTL8153 family (efuse type 1 / V3): marker.py burns 0xCFDB = 0x03 and/or the -AD marker - the user picks.
+  # RTL8156 family (dword): the proven efuse.py burn of 0xCFDB. A plain RTL8153 is what Linux lacks a marker on.
+  $byteProto = $d.Proto -like 'type 1*' -or $d.Proto -like 'type 3*'
+  $script:needLin = (-not $lin) -and ($d.Card.Pid -eq '8153') -and ($d.Variant -eq 'none') -and $byteProto
+  $kind = if ($byteProto -and ((-not $d.Bit1) -or $script:needLin)) { 'enable' } elseif (-not $d.Bit1) { 'burn' }
+          elseif ($lin) { 'ok' } else { 'nolinux' }
   Show-Action $kind
   $msg = switch ($kind) {
     'burn'    { 'Pass-through is off - see the card below.' }
-    'adburn'  { 'Windows and pre-boot: yes. Linux: no - it can be enabled below.' }
+    'enable'  { if ($d.Bit1) { 'Windows and pre-boot: yes. Linux: no - it can be enabled below.' } else { 'Pass-through is off - see the card below.' } }
     'nolinux' { 'Windows and pre-boot: yes. Linux: not on this chip.' }
     default   { 'Works on Windows, pre-boot and Linux.' }
   }
-  Set-Status $msg $(if ($kind -eq 'burn') { $C_RED } else { $C_TEXT })
+  Set-Status $msg $(if (-not $d.Bit1) { $C_RED } else { $C_TEXT })
   if ($script:detOpen) { Fill-Details }
 }
 
@@ -648,22 +699,23 @@ function Preview {
       } else {
         Set-Result 'err' 'Can''t burn  -  nothing written' 'No free efuse slot was found, or the read failed. Details shows the efuse.'
       }
-    } elseif ($script:action -eq 'adburn') {
-      $out = Run-Py 'marker.py' "`"$($d.Guid)`" --plan --json --dll $(Sel-Dll)"
+    } elseif ($script:action -eq 'enable') {
+      $sel = (@(Selected-Records) -join ',')
+      $out = Run-Py 'marker.py' "`"$($d.Guid)`" --plan --records $sel --json --dll $(Sel-Dll)"
       $j = Get-Json $out
       $res = if ($j) { $j.plan.result } else { '' }; $why = if ($j) { $j.plan.reason } else { '' }
-      $rec = $j.plan.record; $at = Hex $j.plan.at 2; $proto = $j.plan.protocol; $proven = [bool]$j.plan.proven
-      $dot = '   ' + [char]0x00B7 + '   '
+      $n = @($j.plan.records).Count; $rec = $j.plan.record; $at = Hex $j.plan.at 2; $proto = $j.plan.protocol; $proven = [bool]$j.plan.proven
+      $dot = '   ' + [char]0x00B7 + '   '; $what = if ($n -gt 1) { "Records $rec" } else { "Record $rec" }
       if ($res -eq 'OK') {
-        $script:previewOk = $true; $script:adAt = $at
+        $script:previewOk = $true; $script:plan = $j.plan; $script:planSel = $sel
         if ($proven) {
-          Set-Result 'info' 'Ready to burn  -  nothing written yet' ("Record $rec  at efuse offset $at" + $dot + 'blank space' + $dot + 'data first, header last')
+          Set-Result 'info' 'Ready to burn  -  nothing written yet' ("$what  at efuse offset $at" + $dot + 'blank space' + $dot + 'data first, header last')
         } else {
-          Set-Result 'warn' 'Ready to burn  -  nothing written yet' ("Record $rec  at offset $at" + $dot + "efuse $proto" + $dot + 'protocol not yet proven on hardware')
+          Set-Result 'warn' 'Ready to burn  -  nothing written yet' ("$what  at offset $at" + $dot + "efuse $proto" + $dot + 'protocol not yet proven on hardware')
         }
-        Set-Btn $btnA2 '2   Burn -AD marker' 'danger' $true
+        Set-Btn $btnA2 (Burn-Label) 'danger' $true
       } elseif ($res -eq 'NOT_NEEDED') {
-        Set-Result 'warn' 'The chip already reports the -AD marker' 'Nothing to burn. Press Rescan if the tiles have not caught up.'
+        Set-Result 'warn' 'Already on the chip' ("Nothing to burn ($why). Press Rescan if the tiles have not caught up.")
       } else {
         Set-Result 'err' 'Can''t burn  -  nothing written' $(if ($why) { $why } else { Tool-Error $out })
       }
@@ -701,24 +753,29 @@ function Burn-Card {
 
 function Burn-Marker {
   $d = $script:rpt; if (-not $d -or -not $script:previewOk) { return }
-  $msg = "Burn the -AD chip-variant marker into this card's efuse?`n`nCard : $($d.Card.Desc)`nMAC  : $($d.Card.Mac)`n`n" +
-         "Adds the record 41 D8 1A 00 10 at efuse offset $($script:adAt) (blank space). The data bytes go first; the header`n" +
-         "that switches the record on is burned last, only if they all verified.`n`n" +
+  $sel = $script:planSel; $lbl = Burn-Label
+  $names = @{ cfdb = '0xCFDB = 0x03 (Windows and pre-boot)'; ad = 'USB_MISC_0 = 0x1000, the -AD marker (Linux)' }
+  $lines = (@($script:plan.records) | ForEach-Object { "  $($_.record)   at efuse offset $(Hex $_.at 2)   $($names[$_.name])" }) -join "`n"
+  $msg = "Burn into this card's efuse?`n`nCard : $($d.Card.Desc)`nMAC  : $($d.Card.Mac)`n`n$lines`n`n" +
+         "Blank space only. Per record the data bytes go first; the header that switches it on`n" +
+         "is burned last, only if they all verified.`n`n" +
          "This is PERMANENT - efuse can be written once and never undone.`nKeep the card plugged in until it finishes."
-  if ([Windows.Forms.MessageBox]::Show($msg, 'Burn the -AD marker - permanent', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { Set-Status 'Burn cancelled.'; return }
-  Set-Busy $true; Set-Btn $btnA1 '1   Preview' 'outline' $false; Set-Btn $btnA2 '2   Burn -AD marker' 'danger' $false
+  if ([Windows.Forms.MessageBox]::Show($msg, 'Burn - permanent', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { Set-Status 'Burn cancelled.'; return }
+  Set-Busy $true; Set-Btn $btnA1 '1   Preview' 'outline' $false; Set-Btn $btnA2 $lbl 'danger' $false
+  $chkWin.Enabled = $false; $chkLin.Enabled = $false
   Set-Status 'Burning - do not unplug the card...' $C_RED
   Show-Progress 'Checking the efuse again...' $true                 # marker.py re-runs every check before it burns
-  try { $out = Run-Py 'marker.py' "`"$($d.Guid)`" --burn --json --dll $(Sel-Dll)" } finally { Hide-Progress; Set-Busy $false }
+  try { $out = Run-Py 'marker.py' "`"$($d.Guid)`" --burn --records $sel --json --dll $(Sel-Dll)" } finally { Hide-Progress; Set-Busy $false }
   $j = Get-Json $out
   $res = if ($j) { $j.burn.result } else { '' }; $why = if ($j) { $j.burn.reason } else { '' }
   if ($res -eq 'OK') {
-    Set-Result 'ok' 'Burned and verified' 'Unplug and re-plug the card so it loads the marker, then press Rescan - the Linux tile should turn green.'
+    Set-Result 'ok' 'Burned and verified' 'Unplug and re-plug the card so it loads the new settings, then press Rescan - the tiles should turn green.'
     Set-Status 'Burn verified. Re-plug the card, then Rescan.' $C_GREEN
-    [Windows.Forms.MessageBox]::Show("Burned and verified.`n`nUnplug and re-plug the card so it loads the marker, then press Rescan.", 'Done', 'OK', 'Information') | Out-Null
+    [Windows.Forms.MessageBox]::Show("Burned and verified.`n`nUnplug and re-plug the card so it loads the new settings, then press Rescan.", 'Done', 'OK', 'Information') | Out-Null
   } elseif ($res -eq 'STOPPED') {
     Set-Result 'err' 'Burn stopped' $why
-    Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Status 'Burn stopped - see the card.' $C_RED
+    Set-Btn $btnA1 '1   Preview' 'outline' $true; $chkWin.Enabled = $true; Sync-Choice; Set-Result 'err' 'Burn stopped' $why
+    Set-Status 'Burn stopped - see the card.' $C_RED
   } else {
     $plan = if ($j) { $j.plan.reason } else { '' }; $err = Tool-Error $out
     Set-Result 'err' 'Not burned' $(if ($plan) { $plan } elseif ($err) { $err } else { 'The tool did not report a result. Details shows the efuse.' })
@@ -818,7 +875,8 @@ $form.Add_FormClosing({
   if ($script:critical) { $_.Cancel = $true; Set-Status 'Writing to the card - wait until it finishes, do not close or unplug.' $C_RED }
 })
 $btnA1.Add_Click({ if ($script:busy) { return }; try { Preview } catch { Set-Busy $false; Set-Status "Preview error: $($_.Exception.Message)" $C_RED } })
-$btnA2.Add_Click({ if ($script:busy) { return }; try { if ($script:action -eq 'adburn') { Burn-Marker } else { Burn-Card } } catch { Set-Busy $false; Set-Status "Error: $($_.Exception.Message)" $C_RED } })
+$chkWin.Add_CheckedChanged({ Sync-Choice }); $chkLin.Add_CheckedChanged({ Sync-Choice })
+$btnA2.Add_Click({ if ($script:busy) { return }; try { if ($script:action -eq 'enable') { Burn-Marker } else { Burn-Card } } catch { Set-Busy $false; Set-Status "Error: $($_.Exception.Message)" $C_RED } })
 $btnDetails.Add_Click({ try { Toggle-Details (-not $script:detOpen) } catch { Set-Busy $false; Set-Status "Details error: $($_.Exception.Message)" $C_RED } })
 $btnSave.Add_Click({ try { Save-Report } catch { Set-Status "Save error: $($_.Exception.Message)" $C_RED } })
 $btnLocate.Add_Click({ try { Locate-Dll } catch { Set-Status "Locate error: $($_.Exception.Message)" $C_RED } })
@@ -844,6 +902,7 @@ if ($Screenshot) {
       Show-Progress 'Burning byte 3 of 5...' $true; $aProgText.Text = 'Burning byte 3 of 5...   1 s'; Set-Status 'Burning - do not unplug the card...' $C_RED
     }
     'addone' { $script:demoAD = $true; $cmb.SelectedIndex = 2 }
+    'bothpreview' { $script:demoBare = $true; $cmb.SelectedIndex = 2; Preview }
     'dry'   { $cmb.SelectedIndex = 0; Preview }
     { $_ -in 'efuse','details' } {
       $cmb.SelectedIndex = 1

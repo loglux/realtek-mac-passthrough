@@ -302,3 +302,23 @@ def test_provenance_factory_and_modified():
     # no stamp at all: nothing can be told
     p = ec.efuse_provenance(ec.parse_autoload_records(bytes.fromhex("40cfdb03ff")), 0xFE)
     assert not p["stamped"] and p["by_realtek"] is None
+
+
+def test_place_records_back_to_back():
+    cfdb, ad = bytes.fromhex("40cfdb03"), bytes.fromhex("41d81a0010")
+    recs = ec.parse_autoload_records(DONGLE_EFUSE)
+    cap = ec.efuse_capacity(ec.EFUSE_V3, 0xD0)
+    # both in one burn: right after the factory records, cfdb then ad, no gap
+    assert ec.place_records(DONGLE_EFUSE, recs, cap, [cfdb, ad]) == [(0x1A, cfdb), (0x1E, ad)]
+    assert ec.place_records(DONGLE_EFUSE, recs, cap, [ad]) == [(0x1A, ad)]
+    # the result parses back as the records we meant, after the factory ones
+    burned = bytearray(DONGLE_EFUSE)
+    burned[0x1A:0x23] = cfdb + ad
+    tail = [(r["at"], r["reg"]) for r in ec.parse_autoload_records(bytes(burned))][-2:]
+    assert tail == [(0x1A, 0xCFDB), (0x1E, 0xD81A)]
+    # no room before Realtek's reserved tail -> an error text, nothing placed
+    full = bytes.fromhex("40cfdb03") * 50 + b"\xff" * (0xD0 - 200)
+    assert isinstance(ec.place_records(full, ec.parse_autoload_records(full), cap, [ad]), str)
+    # records that end in a type we cannot size -> refused
+    odd = bytes([0xC5, 0x11]) + b"\xff" * 20
+    assert "cannot size" in ec.place_records(odd, ec.parse_autoload_records(odd), cap, [ad])
