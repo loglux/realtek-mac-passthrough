@@ -304,6 +304,9 @@ function Parse-Diag($dr) {
   $d.Variant = $(if ($j.linux_variant) { $j.linux_variant } else { 'none' })
   $d.Storage = $(if ($j.storage.text) { $j.storage.text } else { 'not reported' })
   $d.Dll = "$($j.dll.family) v$($j.dll.version) ($($j.dll.exports) procedures)"
+  $d.Profile = $(if ($j.driver -and $j.driver.profile) { $j.driver.profile } else { '' })
+  $d.InfSection = $(if ($j.driver -and $j.driver.inf_section) { $j.driver.inf_section } else { '' })
+  $d.Clone = $(if ($j.driver) { $j.driver.enable_clone_mac } else { $null })
   $d.Layers = [ordered]@{}
   foreach ($k in 'Windows','PXE','Linux') {
     $L = $j.layers.$k
@@ -315,7 +318,7 @@ function Parse-Diag($dr) {
 # plain-language reason under each tile
 function Tile-Reason($layer, $d) {
   switch ($layer) {
-    'Windows' { if ($d.Bit1) {'AUX bit is set'} else {'AUX bit is not set'} }
+    'Windows' { if (-not $d.Bit1) {'AUX bit is not set'} elseif ($d.Layers['Windows'].Val -eq 'NO') {'off in the driver (BasicFunc profile)'} else {'AUX bit is set'} }
     'PXE'     { if ($d.Bit1 -and $d.Bit0) {'AUX bit is set'} elseif ($d.Bit1) {'not tested with this value'} else {'AUX bit is not set'} }
     'Linux'   {
       if ($d.Layers.Contains('Linux') -and $d.Layers['Linux'].Val -eq 'YES') {
@@ -577,6 +580,12 @@ function Show-Action($kind) {
       $aTitle.Text = 'Nothing to do'; $aTitle.ForeColor = $C_GREEN
       $aBody.Text = 'This card passes the laptop''s MAC through on Windows, pre-boot and Linux.'
     }
+    'drvoff' {
+      $aTitle.Text = 'Windows: switched off in the driver'
+      $aBody.Text = 'The card has the pass-through bits, but its maker picked Realtek''s BasicFunc driver profile, which sets EnableCloneMAC = 0. ' +
+                    'Registry Fix (in the release) turns it back on for this adapter - reversible, nothing burned.'
+      $aNote.Text = 'Pre-boot and Linux do not use this switch.'
+    }
     'nolinux' {
       $aTitle.Text = 'Linux: not on this card'
       $aBody.Text = 'Linux only accepts recognised chip variants (-AD, -BND, -BD or Lenovo). This chip isn''t one, and this tool has no proven way to change that.'
@@ -671,13 +680,15 @@ function Read-Card {
   # RTL8156 family (dword): the proven efuse.py burn of 0xCFDB. A plain RTL8153 is what Linux lacks a marker on.
   $byteProto = $d.Proto -like 'type 1*' -or $d.Proto -like 'type 3*'
   $script:needLin = (-not $lin) -and ($d.Card.Pid -eq '8153') -and ($d.Variant -eq 'none') -and $byteProto
+  $winOff = $d.Bit1 -and $d.Layers['Windows'].Val -eq 'NO'      # the AUX bit is there, the driver profile says no
   $kind = if ($byteProto -and ((-not $d.Bit1) -or $script:needLin)) { 'enable' } elseif (-not $d.Bit1) { 'burn' }
-          elseif ($lin) { 'ok' } else { 'nolinux' }
+          elseif ($winOff) { 'drvoff' } elseif ($lin) { 'ok' } else { 'nolinux' }
   Show-Action $kind
   $msg = switch ($kind) {
     'burn'    { 'Pass-through is off - see the card below.' }
     'enable'  { if ($d.Bit1) { 'Windows and pre-boot: yes. Linux: no - it can be enabled below.' } else { 'Pass-through is off - see the card below.' } }
     'nolinux' { 'Windows and pre-boot: yes. Linux: not on this chip.' }
+    'drvoff'  { 'Windows: switched off by the driver profile - see the card below.' }
     default   { 'Works on Windows, pre-boot and Linux.' }
   }
   Set-Status $msg $(if (-not $d.Bit1) { $C_RED } else { $C_TEXT })
@@ -800,6 +811,11 @@ function Fill-Details {
   Add-Txt $rtb "DEVICE`r`n" $C_ACCENT $true $FS_L
   Add-Txt $rtb ("  {0}`r`n  Windows name : {1}`r`n  MAC address  : {2}`r`n  Chip         : {3}, rev {4}`r`n  Efuse        : {7} protocol`r`n  Settings in  : {5}`r`n  Diag DLL     : {6}`r`n`r`n" -f `
     $d.Card.Desc, $d.Card.Name, $d.Card.Mac, $(if ($d.Chip) { $d.Chip } else { Chip-Name $d.Card.Pid }), $d.Rev, $d.Storage, $d.Dll, $(if ($d.Proto) { $d.Proto } else { 'unknown' })) $C_TEXT $false $FS_M $true
+  if ($d.Profile -or $d.InfSection) {
+    $cl = if ($null -eq $d.Clone) { 'not set (on: the driver''s default)' } elseif ($d.Clone) { '1 (on)' } else { '0 (off)' }
+    Add-Txt $rtb ("  Driver       : profile {0} (from the USB revision){1}`r`n  EnableCloneMAC = {2}`r`n`r`n" -f `
+      $(if ($d.Profile) { $d.Profile } else { 'not in the table' }), $(if ($d.InfSection) { ", installed as $($d.InfSection)" } else { '' }), $cl) $C_TEXT $false $FS_M $true
+  }
   Add-Txt $rtb "PASS-THROUGH BY SYSTEM  -  each one checks a different marker`r`n" $C_ACCENT $true $FS_L
   foreach ($k in @('Windows','PXE','Linux')) {
     if (-not $d.Layers.Contains($k)) { continue }

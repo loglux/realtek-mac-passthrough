@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # so sibling mod
 
 from efuse_core import parse_autoload_records
 from rtldiag import EfuseUnavailable, RtlDiag
-from passthru import format_lines, verdict
+from passthru import driver_profile, format_lines, verdict
 from storage import describe as describe_storage
 from jsonout import emit, wanted
 
@@ -48,7 +48,18 @@ def main(argv):
         print(f"  0xD81A USB_MISC_0 = 0x{m0:04X}")
         print(f"  0xD81F USB_MISC_1 = 0x{m1:02X}")
         print(f"  0xCFDB EFUSE(PASS_THRU) = 0x{cfdb:02X}   bit0(RT-clone)={cfdb & 1}  bit1(AUX-clone)={(cfdb >> 1) & 1}")
-        v = verdict(m0, m1, cfdb, vid)
+        profile = driver_profile(rev) if rev else None
+        drv = {}
+        try:
+            from drvreg import adapter_settings
+            drv = adapter_settings(guid)
+        except Exception as e:     # never let the registry read break the register read
+            print(f"  driver settings could not be read: {e}")
+        clone = drv.get("enable_clone_mac")
+        print(f"DRIVER profile = {profile or 'not in the table'} (USB revision low byte 0x{rev & 0xFF:02X})"
+              + (f"   installed as {drv['inf_section']}" if drv.get("inf_section") else "")
+              + "   EnableCloneMAC = " + ("not set (on: the driver's default)" if clone is None else str(int(clone))))
+        v = verdict(m0, m1, cfdb, vid, clone=clone, profile=profile)
         for line in format_lines(v):
             print(line)
         storage = {"dc00": None, "jedec": None, "text": ""}
@@ -67,6 +78,7 @@ def main(argv):
                                                       "overrides", "factory_variant")},
                   "usb_misc_0": m0, "usb_misc_1": m1, "cfdb": cfdb, "linux_variant": v["variant"],
                   "layers": {k: {"ok": v[k][0], "why": v[k][1]} for k in ("Windows", "PXE", "Linux")},
+                  "driver": {"profile": profile, "inf_section": drv.get("inf_section"), "enable_clone_mac": clone},
                   "storage": storage})
     finally:
         c.close()

@@ -36,13 +36,44 @@ def chip_variant(usb_misc_0: int, usb_misc_1: int, vid: int = 0x0BDA):
     return None
 
 
-def verdict(usb_misc_0: int, usb_misc_1: int, cfdb: int, vid: int = 0x0BDA) -> dict:
-    """{'variant': str|None, 'Windows'|'PXE'|'Linux': (ok: bool|None, reason: str)}  - None = not known"""
+# The Windows driver profile. Realtek's INF (rtump64x64, 10.68) picks an install section per card from the low
+# byte of its USB revision (bcdDevice) - a value the card maker burns into the efuse. Low nibble = the profile,
+# for the low bytes 0x00-0x0F, 0xE0-0xEF ("Enterprise" name) and 0xF0-0xFF; other low bytes are one-off
+# sections (e.g. RTL8156B 0x3110-0x3131) and not named here. Only BasicFunc touches pass-through: its
+# DisableMACClone_Hide.reg writes EnableCloneMAC = 0 (and hides it from the adapter's Advanced tab).
+PROFILES = {0x0: "standard", 0x1: "S5Wol", 0x2: "Mapt", 0x3: "S5Wol_Hide", 0x4: "Gaming", 0x5: "Gaming S5Wol",
+            0x7: "S5Wol", 0x8: "RM10MbE", 0xD: "Sta", 0xE: "Dbg", 0xF: "BasicFunc"}
+
+
+def driver_profile(rev: int):
+    """The Windows driver profile a USB revision selects ('Sta', 'BasicFunc', ...), or None if not in the table."""
+    low = rev & 0xFF
+    if low >> 4 not in (0x0, 0xE, 0xF) or (low & 0xF) not in PROFILES:
+        return None
+    name = PROFILES[low & 0xF]
+    if low >> 4 == 0xE:
+        name = name.replace("Gaming", "standard") + " (Enterprise)"
+    return name
+
+
+def verdict(usb_misc_0: int, usb_misc_1: int, cfdb: int, vid: int = 0x0BDA, clone=None, profile=None) -> dict:
+    """{'variant': str|None, 'Windows'|'PXE'|'Linux': (ok: bool|None, reason: str)}  - None = not known.
+
+    clone = the adapter's EnableCloneMAC in the registry (True / False, None = not set: the driver's default,
+    on); profile = driver_profile() of its USB revision. Both only matter to Windows."""
     aux = (cfdb >> 1) & 1    # AUX-clone  - what the Windows driver reads
     bit0 = cfdb & 1          # RT-clone   - r8152 calls it PASS_THRU; the -AD branch needs it
 
-    win = (True, "AUX-clone bit (0xCFDB bit1) is set") if aux else \
-          (False, "AUX-clone bit (0xCFDB bit1) is not set")
+    basic = bool(profile) and profile.startswith("BasicFunc")
+    if not aux:
+        win = (False, "AUX-clone bit (0xCFDB bit1) is not set")
+    elif clone is False:
+        win = (False, "the Windows driver has MAC clone switched off (EnableCloneMAC = 0"
+                      + (", driver profile BasicFunc" if basic else "") + ")")
+    elif clone is None and basic:
+        win = (False, "the driver profile BasicFunc switches MAC clone off (EnableCloneMAC = 0)")
+    else:
+        win = (True, "AUX-clone bit (0xCFDB bit1) is set")
 
     if aux and bit0:
         pxe = (True, "both clone bits set - 0x03 verified at pre-boot on a Dell")

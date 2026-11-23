@@ -66,3 +66,31 @@ def test_format_lines_are_stable():
     assert lines[0] == "  chip variant (r8152) = none"
     assert lines[1].startswith("PASSTHRU Windows = YES  (")
     assert lines[3].startswith("PASSTHRU Linux   = NO   (")
+
+
+def test_driver_profile_from_usb_revision():
+    # Realtek's INF picks the install section from the low byte of bcdDevice (the card maker's choice)
+    assert pt.driver_profile(0x310D) == "Sta"          # the RTL8153E dongle, UGREEN (0x31FD) too
+    assert pt.driver_profile(0x31FD) == "Sta"
+    assert pt.driver_profile(0x3104) == "Gaming"       # WAVLINK: "Realtek Gaming USB 2.5GbE ..."
+    assert pt.driver_profile(0x3102) == "Mapt"
+    assert [pt.driver_profile(r) for r in (0x300F, 0x31EF, 0x31FF)] == ["BasicFunc", "BasicFunc (Enterprise)",
+                                                                             "BasicFunc"]
+    assert pt.driver_profile(0x31E4) == "standard (Enterprise)"
+    assert pt.driver_profile(0x3113) is None            # a one-off RTL8156B section, not in the table
+
+
+def test_windows_needs_the_driver_clone_switch_too():
+    on = pt.verdict(0x1000, 0, 0x03)
+    assert on["Windows"][0] is True
+    # BasicFunc profile: EnableCloneMAC = 0 in the registry -> Windows off despite 0xCFDB = 0x03
+    off = pt.verdict(0x1000, 0, 0x03, clone=False, profile="BasicFunc")
+    assert off["Windows"][0] is False and "BasicFunc" in off["Windows"][1]
+    # registry not readable, but the revision says BasicFunc -> off
+    assert pt.verdict(0x1000, 0, 0x03, profile="BasicFunc")["Windows"][0] is False
+    # BasicFunc card after a registry fix (EnableCloneMAC = 1) -> works
+    assert pt.verdict(0x1000, 0, 0x03, clone=True, profile="BasicFunc")["Windows"][0] is True
+    # the clone switch only matters to Windows: pre-boot and Linux unchanged
+    assert off["PXE"] == on["PXE"] and off["Linux"] == on["Linux"]
+    # no AUX bit: that stays the reason, whatever the registry says
+    assert "0xCFDB bit1" in pt.verdict(0x1000, 0, 0x01, clone=False)["Windows"][1]
