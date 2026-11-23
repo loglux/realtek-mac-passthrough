@@ -220,11 +220,16 @@ Below the tiles, **one action card** offers what fits *this* card:
 - **Windows: switched off in the driver** — the chip has the pass-through bits, but Windows still
   won't pass the MAC through. Realtek's Windows driver picks a *profile* for each card from the last
   digit of its USB revision, which the card's maker burns in; one of them, **BasicFunc** (a revision
-  ending in `F`), sets the driver option `EnableCloneMAC = 0`. Two ways out:
-  - [Registry Fix](registry-fix/README.md) turns the option back on for this adapter — reversible;
+  ending in `F`), sets the driver option `EnableCloneMAC = 0`. The same profile also switches off the
+  driver's power saving (USB U1/U2, EEE+, ALDPS, deep sleep…), its USB speed-ups (burst, streams,
+  aggregation) and some recovery features — a minimal, most-compatible mode the maker chose. Two ways out:
+  - **first choice:** [Registry Fix](registry-fix/README.md) turns only `EnableCloneMAC` back on, for this
+    adapter, and leaves the rest of the profile as the maker set it — reversible;
   - **experimental:** burn a new USB revision (last digit `F` → `2`), so Windows installs Realtek's
-    **Mapt** profile — "MAC Address Pass-Through" — instead. Windows then sees a new device and sets
-    the adapter up afresh. Not yet proven on hardware; the window says so before the burn.
+    **Mapt** profile — "MAC Address Pass-Through" — instead. That brings back everything BasicFunc
+    switched off, not only pass-through: if the maker chose BasicFunc to work around a problem with its
+    device, the problem may come back. Windows then sees a new device and sets the adapter up afresh.
+    Not yet proven on hardware; the window says so before the burn.
 
   ![Windows switched off in the driver](docs/img/06-basicfunc.png)
 

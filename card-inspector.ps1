@@ -594,9 +594,9 @@ function Show-Action($kind) {
       $aTitle.Text = 'Windows: switched off in the driver'
       $basic = $d.Profile -like 'BasicFunc*'
       if ($basic) {
-        $aBody.Text = 'Its maker chose the BasicFunc driver profile (EnableCloneMAC = 0). Experimental: burn a new USB revision ' +
-                      'to get the Mapt (pass-through) profile - or use Registry Fix, reversible.'
-        $aNote.Text = ([char]0x26A0 + '  Permanent, not yet proven on hardware. Windows then sets the adapter up as a new device.'); $aNote.ForeColor = $C_RED
+        $aBody.Text = 'BasicFunc driver profile: EnableCloneMAC = 0. Best: Registry Fix - reversible, changes only that. ' +
+                      'The burn (experimental) switches to Mapt and also restores what BasicFunc turns off.'
+        $aNote.Text = ([char]0x26A0 + '  The burn is permanent, not yet proven on hardware; Windows then sets the adapter up anew.'); $aNote.ForeColor = $C_RED
         $script:offer = @('rev')
         Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Btn $btnA2 '2   Burn new profile' 'danger' $false
         Set-Result 'hint' 'Start with Preview' 'It shows the new USB revision and where it goes - nothing is written. Burn unlocks after it.'
