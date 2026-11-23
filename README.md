@@ -298,6 +298,25 @@ tests, and read the Linux driver's source for its gate.
 
 ---
 
+## Help wanted: cards we could not test
+
+Some paths are written from Realtek's own tools and checked step by step on a simulated card, but we have
+no card to prove them on. The window marks each of them **"not yet proven on hardware"** before a burn. If
+you have one of these, your result would settle it — good or bad:
+
+| Your card | What is unproven | How to spot it |
+|---|---|---|
+| **Older RTL8152 / RTL8153 / RTL8153B** | the efuse protocol *type 1* (the window says so) | *Details* → *Efuse: type 1 protocol* |
+| **A "BasicFunc" card** | turning the driver profile into *Mapt* by burning a new USB revision | the Windows tile says *"off in the driver (BasicFunc)"*; USB revision ending in `F` |
+| **RTL8156 / 8156B with a BasicFunc revision** | the same, written as several efuse dwords | as above, on a 2.5G card |
+
+**To report:** before anything else press **Save report** (it is read-only), then after the burn and a
+re-plug press it again, and attach both files to a
+[GitHub issue](https://github.com/loglux/realtek-mac-passthrough/issues) with what you saw in Windows
+(and Linux, if you tried). A report with no burn at all helps too — it shows how your card is set up.
+
+---
+
 ## ⚠️ Safety & disclaimer
 
 - The burn is a **one-time, irreversible (OTP)** write. **Rehearse on a spare first** — a cheap
