@@ -387,6 +387,31 @@ OWN_RECORDS = {(0xCFDB, b"\x03"): "the pass-through bits RtlPassthru writes",
                (0xD81A, b"\x00\x10"): "the -AD marker RtlPassthru writes"}
 
 
+def bcd_register(ctype: int):
+    """The USB register that holds the card's USB revision (bcdDevice) for a chip type - Realtek's tool 2.0.30
+    keeps it per type (its efuse field BCD_DEVICE, a 2-byte USB record): 0xC054 on RTL8152 / RTL8153 / 8153B /
+    8153C, 0xC00C on RTL8156 / 8156B, 0xC018 on RTL8157 / 8159. None for an unknown type. Matches our cards:
+    the RTL8153E dongle has a 0xC054 record, the WAVLINK RTL8156BG a 0xC00C one, each equal to its bcdDevice."""
+    if ctype in (0x1001, 0x2001, 0x2002, 0x2003) or 0x3001 <= ctype <= 0x3005 or 0x3101 <= ctype <= 0x3106 \
+            or 0x3201 <= ctype <= 0x3205:
+        return 0xC054
+    if ctype in (0x4001, 0x4002, 0x4003, 0x4101, 0x4102, 0x4103):
+        return 0xC00C
+    if ctype in (0x5001, 0x5002, 0x6001, 0x6002):
+        return 0xC018
+    return None
+
+
+def mapt_revision(rev: int):
+    """The USB revision that turns a BasicFunc driver profile into Mapt (MAC Address Pass-Through), or None if
+    `rev` is not BasicFunc. Only the low nibble changes (F -> 2): the high byte names the chip generation to the
+    driver, the high nibble of the low byte its Enterprise / Windows-Update set - both stay."""
+    low = rev & 0xFF
+    if low >> 4 not in (0x0, 0xE, 0xF) or low & 0xF != 0xF:
+        return None
+    return (rev & 0xFFF0) | 0x2
+
+
 def place_records(area: bytes, recs: list, cap: int, new: list):
     """Where `new` records (a list of bytes) go: back to back right after the last record, no FF gap (FF ends the
     records). Returns [(at, record), ...], or an error text when they cannot go there safely: the records end in

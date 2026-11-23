@@ -217,6 +217,18 @@ Below the tiles, **one action card** offers what fits *this* card:
   In Linux the interface may get a new name: a name like `enx00e04c…` is built from the dongle's own
   MAC, which it no longer uses. If your network settings refer to the interface by that name, update
   them after the burn.
+- **Windows: switched off in the driver** — the chip has the pass-through bits, but Windows still
+  won't pass the MAC through. Realtek's Windows driver picks a *profile* for each card from the last
+  digit of its USB revision, which the card's maker burns in; one of them, **BasicFunc** (a revision
+  ending in `F`), sets the driver option `EnableCloneMAC = 0`. Two ways out:
+  - [Registry Fix](registry-fix/README.md) turns the option back on for this adapter — reversible;
+  - **experimental:** burn a new USB revision (last digit `F` → `2`), so Windows installs Realtek's
+    **Mapt** profile — "MAC Address Pass-Through" — instead. Windows then sees a new device and sets
+    the adapter up afresh. Not yet proven on hardware; the window says so before the burn.
+
+  ![Windows switched off in the driver](docs/img/06-basicfunc.png)
+
+  Pre-boot and Linux don't use this driver option.
 - **Nothing to do** — everything already works.
 - **Linux: not on this card** — Windows and pre-boot work, but Linux doesn't recognise the chip and
   this card isn't one the tool can mark (for example an RTL8156 without the "-AD" variant). The tool
@@ -310,7 +322,9 @@ tools/                 Python backend:
   diag.py                read registers (REV, USB_MISC, 0xCFDB) and the per-system verdict
   settings.py            read-only settings dump: chip type, efuse (all three protocols) + SPI flash start
   efuse.py               efuse dump / preview / burn of 0xCFDB (RTL8156-family efuse)
-  marker.py              preview / burn on the RTL8153 family: 0xCFDB = 0x03 and/or the Linux "-AD" marker
+  marker.py              preview / burn: 0xCFDB = 0x03 and the Linux "-AD" marker (RTL8153 family),
+                         the USB revision BasicFunc -> Mapt (experimental, any family)
+  drvreg.py              the Windows driver's own settings for the adapter (profile, EnableCloneMAC)
   jsonout.py             the one machine-readable result line the window reads
   rtldiag.py             unified DLL layer (classifies + drives the Realtek library)
   passthru.py            which registers each system checks -> the verdict (unit-tested)
@@ -337,6 +351,7 @@ python -I tools/efuse.py {InterfaceGuid} --plan     # preview: show what a burn 
 python -I tools/efuse.py {InterfaceGuid} --burn     # burn 0xCFDB = 0x03   (irreversible)
 python -I tools/marker.py {InterfaceGuid} --plan --records cfdb,ad   # RTL8153: preview 0xCFDB = 0x03 + the -AD marker
 python -I tools/marker.py {InterfaceGuid} --burn --records ad        # burn just the -AD marker   (irreversible)
+python -I tools/marker.py {InterfaceGuid} --plan --records rev       # BasicFunc card: preview the Mapt revision
 python -I tools/dll_list.py                         # list / classify the Realtek DLLs found
 ```
 

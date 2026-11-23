@@ -11,7 +11,7 @@
   -Screenshot <png> [-State red|green|plain|dry|details|efuse] saves one state to a PNG (implies -Demo).
 #>
 param([switch]$Demo, [string]$Screenshot = '',
-      [ValidateSet('red','green','plain','dry','efuse','details','adpreview','adburning','addone','bothpreview')][string]$State = 'red')
+      [ValidateSet('red','green','plain','dry','efuse','details','adpreview','adburning','addone','bothpreview','basicfunc')][string]$State = 'red')
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $ErrorActionPreference = 'Stop'
@@ -25,6 +25,7 @@ $DEMO_GREEN_GUID = '{22222222-2222-2222-2222-222222222222}'
 $DEMO_PLAIN_GUID = '{33333333-3333-3333-3333-333333333333}'   # a plain RTL8153 with a driver-disk flash
 $script:demoAD = $false          # demo: has the -AD marker been "burned" into the plain RTL8153's efuse
 $script:demoBare = $false        # demo: the plain RTL8153 without the clone bits (0xCFDB = 0x00) - both records offered
+$script:demoBasic = $false       # demo: the burned RTL8156 as a BasicFunc card (USB revision 0x310F, EnableCloneMAC = 0)
 
 # ---------- theme ----------
 function rgb($r,$g,$b) { [Drawing.Color]::FromArgb($r,$g,$b) }
@@ -99,15 +100,19 @@ function Demo-Py($script, $argline) {
       $aux = if ($green) {'AUX-clone bit (0xCFDB bit1) is set'} else {'AUX-clone bit (0xCFDB bit1) is not set'}
       $lin = if ($green) {'RTL8153-AD variant, and 0xCFDB bit0 is set'} else {'RTL8153-AD variant, but 0xCFDB bit0 is not set'}
       $pxe = if ($green) {'both clone bits set - 0x03 verified at pre-boot on a Dell'} else {$aux}
+      $bf = $green -and $script:demoBasic
+      $winOk = $green -and -not $bf; $winWhy = if ($bf) {'the Windows driver has MAC clone switched off (EnableCloneMAC = 0, driver profile BasicFunc)'} else {$aux}
+      $drv = if ($bf) { @{ profile='BasicFunc'; inf_section='RTL8156Bx64_BasicFunc.ndi.NT'; enable_clone_mac=$false } }
+             else { @{ profile='Gaming'; inf_section='RTL8156Bx64.ndi.NT'; enable_clone_mac=$null } }
       return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
-        "bcdDevice(REV) = 0x3104","CHIP = RTL8156BG (type 0x4102), efuse protocol = type 2 (dword)","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
+        ("bcdDevice(REV) = " + $(if ($bf) {'0x310F'} else {'0x3104'})),"CHIP = RTL8156BG (type 0x4102), efuse protocol = type 2 (dword)","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
         ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  chip variant (r8152) = AD",
-        ("PASSTHRU Windows = {0}  ({1})" -f $yn,$aux),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
+        ("PASSTHRU Windows = {0}  ({1})" -f $(if ($winOk) {'YES'} else {'NO '}),$winWhy),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
         "  storage DC00 = 0x00   SPI flash ID = 00 00 00","CONFIG STORAGE = efuse (one-time) - no external memory found; EEPROM not probed",
-        (DJ @{ tool='diag'; rev=0x3104; cfdb=$(if ($green) {3} else {0}); usb_misc_0=0x1000; usb_misc_1=0; linux_variant='AD'
+        (DJ @{ tool='diag'; rev=$(if ($bf) {0x310F} else {0x3104}); cfdb=$(if ($green) {3} else {0}); usb_misc_0=0x1000; usb_misc_1=0; linux_variant='AD'; driver=$drv
                chip=@{ name='RTL8156BG (type 0x4102)'; type=0x4102; variant=0x502; protocol='type 2 (dword)'; new_chip=$false }
                dll=@{ family='Direct_API'; version='5.0.0.2'; exports=216; path='dll\new\RtlDirectDiagLib64.dll' }
-               layers=@{ Windows=@{ ok=$green; why=$aux }; PXE=@{ ok=$green; why=$pxe }; Linux=@{ ok=$green; why=$lin } }
+               layers=@{ Windows=@{ ok=$winOk; why=$winWhy }; PXE=@{ ok=$green; why=$pxe }; Linux=@{ ok=$green; why=$lin } }
                storage=@{ dc00=0; jedec='00 00 00'; text='efuse (one-time) - no external memory found; EEPROM not probed' } })) -join "`r`n")
     }
     'settings.py' {
@@ -205,6 +210,11 @@ function Demo-Py($script, $argline) {
     'marker.py' {
       $mj = @{ tool='marker'; burn=@{}; plan=@{ result='OK'; reason=''; record='41 D8 1A 00 10'; at=0x1A; protocol='type 3 (V3)'; proven=$true
                                                    records=@(@{ name='ad'; record='41 D8 1A 00 10'; at=0x1A }) } }
+      if ($argline -like '*--records rev*') {
+        $mj.plan = @{ result='OK'; reason=''; record='41 C0 0C 02 31'; at=0x24; protocol='type 2 (dword)'; proven=$false; experimental=$true
+                      rev=@{ now=0x310F; new=0x3102; register=0xC00C }; records=@(@{ name='rev'; record='41 C0 0C 02 31'; at=0x24 }) }
+        return ("PLAN rev = USB revision 0x310F -> 0x3102 in register 0xC00C`r`nPLAN RESULT = OK`r`n(read-only - nothing was written)`r`n" + (DJ $mj))
+      }
       if ($script:demoBare -and $argline -like '*cfdb,ad*') {
         $mj.plan = @{ result='OK'; reason=''; record='40 CF DB 03  +  41 D8 1A 00 10'; at=0x1A; protocol='type 3 (V3)'; proven=$true
                       records=@(@{ name='cfdb'; record='40 CF DB 03'; at=0x1A }, @{ name='ad'; record='41 D8 1A 00 10'; at=0x1E }) }
@@ -318,7 +328,7 @@ function Parse-Diag($dr) {
 # plain-language reason under each tile
 function Tile-Reason($layer, $d) {
   switch ($layer) {
-    'Windows' { if (-not $d.Bit1) {'AUX bit is not set'} elseif ($d.Layers['Windows'].Val -eq 'NO') {'off in the driver (BasicFunc profile)'} else {'AUX bit is set'} }
+    'Windows' { if (-not $d.Bit1) {'AUX bit is not set'} elseif ($d.Layers['Windows'].Val -eq 'NO') {'off in the driver (BasicFunc)'} else {'AUX bit is set'} }
     'PXE'     { if ($d.Bit1 -and $d.Bit0) {'AUX bit is set'} elseif ($d.Bit1) {'not tested with this value'} else {'AUX bit is not set'} }
     'Linux'   {
       if ($d.Layers.Contains('Linux') -and $d.Layers['Linux'].Val -eq 'YES') {
@@ -582,9 +592,19 @@ function Show-Action($kind) {
     }
     'drvoff' {
       $aTitle.Text = 'Windows: switched off in the driver'
-      $aBody.Text = 'The card has the pass-through bits, but its maker picked Realtek''s BasicFunc driver profile, which sets EnableCloneMAC = 0. ' +
-                    'Registry Fix (in the release) turns it back on for this adapter - reversible, nothing burned.'
-      $aNote.Text = 'Pre-boot and Linux do not use this switch.'
+      $basic = $d.Profile -like 'BasicFunc*'
+      if ($basic) {
+        $aBody.Text = 'Its maker chose the BasicFunc driver profile (EnableCloneMAC = 0). Experimental: burn a new USB revision ' +
+                      'to get the Mapt (pass-through) profile - or use Registry Fix, reversible.'
+        $aNote.Text = ([char]0x26A0 + '  Permanent, not yet proven on hardware. Windows then sets the adapter up as a new device.'); $aNote.ForeColor = $C_RED
+        $script:offer = @('rev')
+        Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Btn $btnA2 '2   Burn new profile' 'danger' $false
+        Set-Result 'hint' 'Start with Preview' 'It shows the new USB revision and where it goes - nothing is written. Burn unlocks after it.'
+      } else {
+        $aBody.Text = 'The card has the pass-through bits, but the driver setting EnableCloneMAC is 0 for this adapter. ' +
+                      'Registry Fix (in the release) turns it back on - reversible, nothing burned.'
+        $aNote.Text = 'Pre-boot and Linux do not use this switch.'
+      }
     }
     'nolinux' {
       $aTitle.Text = 'Linux: not on this card'
@@ -607,7 +627,7 @@ function Selected-Records {
 }
 function Burn-Label {
   $r = @(Selected-Records)
-  if ($r.Count -eq 2) { '2   Burn both' } elseif ($r -contains 'ad') { '2   Burn -AD marker' } else { '2   Burn AUX bit' }
+  if ($r -contains 'rev') { '2   Burn new profile' } elseif ($r.Count -eq 2) { '2   Burn both' } elseif ($r -contains 'ad') { '2   Burn -AD marker' } else { '2   Burn AUX bit' }
 }
 function Sync-Choice {
   # Linux needs 0xCFDB bit0 too: without it on the chip, the -AD marker only makes sense together with 0xCFDB = 0x03
@@ -715,7 +735,7 @@ function Preview {
       } else {
         Set-Result 'err' 'Can''t burn  -  nothing written' 'No free efuse slot was found, or the read failed. Details shows the efuse.'
       }
-    } elseif ($script:action -eq 'enable') {
+    } elseif ($script:action -in 'enable','drvoff') {
       $sel = (@(Selected-Records) -join ',')
       $out = Run-Py 'marker.py' "`"$($d.Guid)`" --plan --records $sel --json --dll $(Sel-Dll)"
       $j = Get-Json $out
@@ -724,7 +744,10 @@ function Preview {
       $dot = '   ' + [char]0x00B7 + '   '; $what = if ($n -gt 1) { "Records $rec" } else { "Record $rec" }
       if ($res -eq 'OK') {
         $script:previewOk = $true; $script:plan = $j.plan; $script:planSel = $sel
-        if ($proven) {
+        if ($j.plan.experimental) {
+          $rv = $j.plan.rev
+          Set-Result 'warn' 'Ready to burn  -  experimental, nothing written yet' ("$what  at offset $at" + $dot + "USB revision $(Hex $rv.now 4) -> $(Hex $rv.new 4)" + $dot + 'not yet proven on hardware')
+        } elseif ($proven) {
           Set-Result 'info' 'Ready to burn  -  nothing written yet' ("$what  at efuse offset $at" + $dot + 'blank space' + $dot + 'data first, header last')
         } else {
           Set-Result 'warn' 'Ready to burn  -  nothing written yet' ("$what  at offset $at" + $dot + "efuse $proto" + $dot + 'protocol not yet proven on hardware')
@@ -770,7 +793,8 @@ function Burn-Card {
 function Burn-Marker {
   $d = $script:rpt; if (-not $d -or -not $script:previewOk) { return }
   $sel = $script:planSel; $lbl = Burn-Label
-  $names = @{ cfdb = '0xCFDB = 0x03 (Windows and pre-boot)'; ad = 'USB_MISC_0 = 0x1000, the -AD marker (Linux)' }
+  $names = @{ cfdb = '0xCFDB = 0x03 (Windows and pre-boot)'; ad = 'USB_MISC_0 = 0x1000, the -AD marker (Linux)'
+              rev = 'new USB revision: driver profile BasicFunc -> Mapt (EXPERIMENTAL; Windows sets the adapter up anew)' }
   $lines = (@($script:plan.records) | ForEach-Object { "  $($_.record)   at efuse offset $(Hex $_.at 2)   $($names[$_.name])" }) -join "`n"
   $msg = "Burn into this card's efuse?`n`nCard : $($d.Card.Desc)`nMAC  : $($d.Card.Mac)`n`n$lines`n`n" +
          "Blank space only. Per record the data bytes go first; the header that switches it on`n" +
@@ -897,7 +921,7 @@ $form.Add_FormClosing({
 })
 $btnA1.Add_Click({ if ($script:busy) { return }; try { Preview } catch { Set-Busy $false; Set-Status "Preview error: $($_.Exception.Message)" $C_RED } })
 $chkWin.Add_CheckedChanged({ Sync-Choice }); $chkLin.Add_CheckedChanged({ Sync-Choice })
-$btnA2.Add_Click({ if ($script:busy) { return }; try { if ($script:action -eq 'enable') { Burn-Marker } else { Burn-Card } } catch { Set-Busy $false; Set-Status "Error: $($_.Exception.Message)" $C_RED } })
+$btnA2.Add_Click({ if ($script:busy) { return }; try { if ($script:action -in 'enable','drvoff') { Burn-Marker } else { Burn-Card } } catch { Set-Busy $false; Set-Status "Error: $($_.Exception.Message)" $C_RED } })
 $btnDetails.Add_Click({ try { Toggle-Details (-not $script:detOpen) } catch { Set-Busy $false; Set-Status "Details error: $($_.Exception.Message)" $C_RED } })
 $btnSave.Add_Click({ try { Save-Report } catch { Set-Status "Save error: $($_.Exception.Message)" $C_RED } })
 $btnLocate.Add_Click({ try { Locate-Dll } catch { Set-Status "Locate error: $($_.Exception.Message)" $C_RED } })
@@ -924,6 +948,7 @@ if ($Screenshot) {
     }
     'addone' { $script:demoAD = $true; $cmb.SelectedIndex = 2 }
     'bothpreview' { $script:demoBare = $true; $cmb.SelectedIndex = 2; Preview }
+    'basicfunc' { $script:demoBasic = $true; $cmb.SelectedIndex = 1; Preview }
     'dry'   { $cmb.SelectedIndex = 0; Preview }
     { $_ -in 'efuse','details' } {
       $cmb.SelectedIndex = 1
