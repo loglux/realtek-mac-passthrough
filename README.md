@@ -197,7 +197,7 @@ Below the tiles, **one action card** offers what fits *this* card:
     bar shows it writing and verifying (the window can't be closed mid-write). Then **unplug and
     re-plug** it, so the chip reloads its efuse, and press **Rescan**. The Windows and pre-boot
     tiles should turn green — and Linux too, if the chip passes Linux's `USB_MISC` test.
-- **Enable pass-through on an RTL8153** — the card ticks what this chip lacks, and you choose:
+- **Enable pass-through on an RTL8153** — when the chip lacks both, you choose with two checkboxes:
   - **Windows + pre-boot** — `0xCFDB = 0x03` (`40 CF DB 03`);
   - **Linux** — the "-AD" marker (`41 D8 1A 00 10`). Linux also needs bit 0 of `0xCFDB`, so on a chip
     without it this box works only together with the first one.
@@ -209,7 +209,8 @@ Below the tiles, **one action card** offers what fits *this* card:
 
   ![Enable pass-through on an RTL8153](docs/img/05-enable-both.png)
 
-  A dongle that already works in Windows and at pre-boot gets just the Linux box:
+  When only one of them is missing, the card offers just that one — for example a dongle that already
+  works in Windows and at pre-boot gets a plain **Enable Linux** card:
 
   ![Enable Linux](docs/img/05-enable-linux.png)
 

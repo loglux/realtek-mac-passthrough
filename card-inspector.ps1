@@ -563,11 +563,13 @@ function Show-Action($kind) {
       $aTitle.Text = if ($nw -and $nl) { 'Enable pass-through' } elseif ($nl) { 'Enable Linux' } else { 'Enable pass-through  (Windows and pre-boot)' }
       $aBody.Text = if ($nw -and $nl) { 'Burns what you tick into the chip''s efuse. Both together: one burn, one re-plug.' }
                     elseif ($nl) { 'Burns the -AD chip-variant marker into the chip''s efuse, so the Linux r8152 driver accepts it. Windows and pre-boot are not affected.' }
+                    elseif ($d.Variant -eq 'AD') { 'Burns both clone bits into the chip''s efuse (0xCFDB = 0x03). On this -AD chip that switches on Linux too.' }
                     else { 'Burns both clone bits into the chip''s efuse (0xCFDB = 0x03).' }
       $aNote.Text = ([char]0x26A0 + '  Permanent - efuse can be written once and never undone.'); $aNote.ForeColor = $C_RED
       $script:syncing = $true
-      $chkWin.Visible = $nw; $chkWin.Checked = $nw; $chkLin.Visible = $nl; $chkLin.Checked = $nl
-      $chkLin.Top = if ($nw) { 134 } else { 112 }
+      $script:offer = @($(if ($nw) { 'cfdb' }), $(if ($nl) { 'ad' })) | Where-Object { $_ }
+      $both = $nw -and $nl                       # a checkbox only when there is something to choose
+      $chkWin.Visible = $both; $chkWin.Checked = $true; $chkLin.Visible = $both; $chkLin.Checked = $true
       $script:syncing = $false
       Sync-Choice
     }
@@ -589,7 +591,10 @@ function Show-Action($kind) {
 }
 
 function Selected-Records {
-  @($(if ($chkWin.Visible -and $chkWin.Checked) { 'cfdb' }), $(if ($chkLin.Visible -and $chkLin.Checked) { 'ad' })) | Where-Object { $_ }
+  # one option offered: that one; two: the ticked ones
+  $o = @($script:offer)
+  if ($o.Count -lt 2) { return $o }
+  @($(if ($chkWin.Checked) { 'cfdb' }), $(if ($chkLin.Checked) { 'ad' })) | Where-Object { $_ }
 }
 function Burn-Label {
   $r = @(Selected-Records)
@@ -602,7 +607,7 @@ function Sync-Choice {
   try {
     $d = $script:rpt; $bit0 = $d -and $d.Bit0
     if ($chkLin.Visible) {
-      $ok = $bit0 -or ($chkWin.Visible -and $chkWin.Checked)
+      $ok = $bit0 -or $chkWin.Checked
       $chkLin.Enabled = $ok; if (-not $ok) { $chkLin.Checked = $false }
     }
     $script:previewOk = $false
