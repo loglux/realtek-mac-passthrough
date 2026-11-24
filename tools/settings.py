@@ -21,7 +21,7 @@ from rtldiag import EfuseUnavailable, RtlDiag
 from storage import flash_name, has_flash
 
 NAMES = {0xC000: "MAC address", 0xCFDB: "SW_FEATURE - MAC clone / pass-through bits",
-         0xD81A: "USB_MISC_0 - chip variant (AD marker)", 0xD81F: "USB_MISC_1 - chip variant (BD/BND)"}
+         0xD81A: "USB_MISC_0 - r8152 AD marker", 0xD81F: "USB_MISC_1 - r8152 BD/BND markers"}
 EFUSE_BYTES = 2048      # the whole efuse address space of the dword protocol (9-bit dword address)
 FLASH_BYTES = 256       # only the start of the flash is shown (header of the driver install disk)
 

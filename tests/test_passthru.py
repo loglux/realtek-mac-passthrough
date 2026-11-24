@@ -63,7 +63,7 @@ def test_lenovo_vid():
 
 def test_format_lines_are_stable():
     lines = pt.format_lines(pt.verdict(0x0000, 0x40, 0x03))
-    assert lines[0] == "  chip variant (r8152) = none"
+    assert lines[0] == "  r8152 marker = none"
     assert lines[1].startswith("PASSTHRU Windows = YES  (")
     assert lines[3].startswith("PASSTHRU Linux   = NO   (")
 
@@ -94,3 +94,13 @@ def test_windows_needs_the_driver_clone_switch_too():
     assert off["PXE"] == on["PXE"] and off["Linux"] == on["Linux"]
     # no AUX bit: that stays the reason, whatever the registry says
     assert "0xCFDB bit1" in pt.verdict(0x1000, 0, 0x01, clone=False)["Windows"][1]
+
+
+def test_reasons_name_the_marker_never_a_chip():
+    # Regression: an RTL8156 with the AD marker was reported as "RTL8153-AD variant". r8152 tests the
+    # marker registers on any chip, so no reason may name a chip model.
+    for m0, m1 in ((0x1000, 0x00), (0x0000, 0x04), (0x0000, 0x01), (0x0000, 0x00)):
+        for cfdb in (0x00, 0x01, 0x03):
+            r = pt.verdict(m0, m1, cfdb)
+            assert not any("RTL8" in r[k][1] for k in ("Windows", "PXE", "Linux")), r
+    assert "AD marker" in pt.verdict(0x1000, 0x00, 0x03)["Linux"][1]

@@ -5,7 +5,7 @@ Usage:
   python -I efuse.py {GUID} --plan [--dll ...]    dry run: show where/what would be written
   python -I efuse.py {GUID} --burn [--dll ...]    OTP write 0xCFDB=0x03 (both clone bits), verify
 
-Always 0x03, like a chip that ships enabled: Windows needs the AUX bit (bit1), Linux on -AD chips also
+Always 0x03, like a chip that ships enabled: Windows needs the AUX bit (bit1), Linux on cards with the AD marker also
 needs bit0, and pre-boot was verified with 0x03 only. (The old --aux-only / 0x02 option was removed.)
 
 The burn appends a 4-byte record to the trailing 0xFF run (end of autoload); factory data is untouched.
@@ -66,7 +66,7 @@ def main(argv):
         print("usage: efuse.py {GUID} [N] [--plan|--burn] [--dll new|old|auto] [--json]")
         return 2
     if "--aux-only" in argv:
-        print("ERROR: --aux-only was removed. 0x02 turns Linux pass-through off on -AD chips and was never "
+        print("ERROR: --aux-only was removed. 0x02 turns Linux pass-through off on cards with the AD marker and was never "
               "tested at pre-boot; RtlPassthru always writes 0x03.")
         return 2
     guid = argv[0]

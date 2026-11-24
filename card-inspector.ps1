@@ -76,11 +76,11 @@ function Demo-Py($script, $argline) {
     'diag.py' {
       if ($g -eq 'plain') {
         $m0 = if ($script:demoAD) {'0x1000'} else {'0x0000'}; $var = if ($script:demoAD) {'AD'} else {'none'}
-        $lin = if ($script:demoAD) {'YES  (RTL8153-AD variant, and 0xCFDB bit0 is set)'} else {'NO   (not a chip variant r8152 recognises (no AD / BND / BD marker))'}
+        $lin = if ($script:demoAD) {'YES  (AD marker (USB_MISC_0 = 0x1000), and 0xCFDB bit0 is set)'} else {'NO   (no marker r8152 accepts (AD / BND / BD))'}
         $chip = if ($script:demoAD) {'RTL8153E (type 0x3106) + efuse record USB_MISC_0 (0xD81A) = 0x1000 (not a factory value)'} else {'RTL8153E (type 0x3106)'}
         return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
           "bcdDevice(REV) = 0x310D",("CHIP = $chip, efuse protocol = type 3 (V3)"),"  0xD81A USB_MISC_0 = $m0","  0xD81F USB_MISC_1 = 0x10",
-          $(if ($script:demoBare) { "  0xCFDB EFUSE(PASS_THRU) = 0x00   bit0(RT-clone)=0  bit1(AUX-clone)=0" } else { "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1" }),"  chip variant (r8152) = $var",
+          $(if ($script:demoBare) { "  0xCFDB EFUSE(PASS_THRU) = 0x00   bit0(RT-clone)=0  bit1(AUX-clone)=0" } else { "  0xCFDB EFUSE(PASS_THRU) = 0x03   bit0(RT-clone)=1  bit1(AUX-clone)=1" }),"  r8152 marker = $var",
           $(if ($script:demoBare) { "PASSTHRU Windows = NO   (AUX-clone bit (0xCFDB bit1) is not set)" } else { "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)" }),
           $(if ($script:demoBare) { "PASSTHRU PXE     = NO   (AUX-clone bit (0xCFDB bit1) is not set)" } else { "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)" }),
           "PASSTHRU Linux   = $lin",
@@ -98,7 +98,7 @@ function Demo-Py($script, $argline) {
       $green = $g -eq 'green'
       $cf = if ($green) {'0x03'} else {'0x00'}; $b = if ($green) {1} else {0}; $yn = if ($green) {'YES'} else {'NO '}
       $aux = if ($green) {'AUX-clone bit (0xCFDB bit1) is set'} else {'AUX-clone bit (0xCFDB bit1) is not set'}
-      $lin = if ($green) {'RTL8153-AD variant, and 0xCFDB bit0 is set'} else {'RTL8153-AD variant, but 0xCFDB bit0 is not set'}
+      $lin = if ($green) {'AD marker (USB_MISC_0 = 0x1000), and 0xCFDB bit0 is set'} else {'AD marker (USB_MISC_0 = 0x1000), but 0xCFDB bit0 is not set'}
       $pxe = if ($green) {'both clone bits set - 0x03 verified at pre-boot on a Dell'} else {$aux}
       $bf = $green -and $script:demoBasic
       $winOk = $green -and -not $bf; $winWhy = if ($bf) {'the Windows driver has MAC clone switched off (EnableCloneMAC = 0, driver profile BasicFunc)'} else {$aux}
@@ -106,7 +106,7 @@ function Demo-Py($script, $argline) {
              else { @{ profile='Gaming'; inf_section='RTL8156Bx64.ndi.NT'; enable_clone_mac=$null } }
       return (@("GUID (demo)","DLL Direct_API v5.0.0.2 (216 procedures)  dll\new\RtlDirectDiagLib64.dll",
         ("bcdDevice(REV) = " + $(if ($bf) {'0x310F'} else {'0x3104'})),"CHIP = RTL8156BG (type 0x4102), efuse protocol = type 2 (dword)","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
-        ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  chip variant (r8152) = AD",
+        ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  r8152 marker = AD",
         ("PASSTHRU Windows = {0}  ({1})" -f $(if ($winOk) {'YES'} else {'NO '}),$winWhy),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
         "  SPI flash ID = 00 00 00   EEPROM word0/word38 = FFFF FFFF   (0xDC00 = 0x00, not a storage flag)","CONFIG STORAGE = efuse only (one-time) - no EEPROM content (word0 0xFFFF); no SPI flash",
         (DJ @{ tool='diag'; rev=$(if ($bf) {0x310F} else {0x3104}); cfdb=$(if ($green) {3} else {0}); usb_misc_0=0x1000; usb_misc_1=0; linux_variant='AD'; driver=$drv
@@ -123,7 +123,7 @@ function Demo-Py($script, $argline) {
         $ef = if ($script:demoAD) {
           @('0x000: 25 c0 00 00 11 22 33 44 ad 21 dd 90 87 78 41 c0  |%...."3D.!...xA.|','0x010: 54 0d 31 23 e8 18 18 02 05 04 41 d8 1a 00 10 ff  |T.1#......A.....|',
             '0x020-0x0BF: all FF','0x0C0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff fe  |................|','records:') + $recs + @(
-            "  0x01A: write [00 10] -> reg 0xD81A  (USB_MISC_0 - chip variant (AD marker))","in plain words:",
+            "  0x01A: write [00 10] -> reg 0xD81A  (USB_MISC_0 - the AD marker)","in plain words:",
             "  0x000-0x01E  5 setting record(s), listed above; the chip applies them at power-on",
             "  0x01F-0x0C9  all FF = empty: never written (171 bytes free; FF is the blank state)",
             "  0x0CA-0x0CE  reserved by Realtek's tool - never used for records",
@@ -332,9 +332,9 @@ function Tile-Reason($layer, $d) {
     'PXE'     { if ($d.Bit1 -and $d.Bit0) {'AUX bit is set'} elseif ($d.Bit1) {'not tested with this value'} else {'AUX bit is not set'} }
     'Linux'   {
       if ($d.Layers.Contains('Linux') -and $d.Layers['Linux'].Val -eq 'YES') {
-        switch ($d.Variant) { 'AD' {'recognised chip (RTL8153-AD)'} 'BND' {'recognised chip (RTL8153-BND)'} 'BD' {'recognised chip (RTL8153-BD)'} 'Lenovo' {'recognised Lenovo chip'} default {'recognised chip'} }
-      } elseif ($d.Variant -eq 'AD') { '-AD chip, but bit 0 is not set' }
-      else { 'chip variant not recognised' }
+        switch ($d.Variant) { 'AD' {'AD marker set'} 'BND' {'BND marker set'} 'BD' {'BD marker set'} 'Lenovo' {'Lenovo chip'} default {'marker recognised'} }
+      } elseif ($d.Variant -eq 'AD') { 'AD marker, but bit 0 is not set' }
+      else { 'no marker Linux accepts' }
     }
   }
 }
@@ -444,7 +444,7 @@ function New-Chk($text, $y) {
   $act.Controls.Add($k); $k
 }
 $chkWin = New-Chk 'Windows + pre-boot    (0xCFDB = 0x03)' 112
-$chkLin = New-Chk 'Linux    (the -AD chip-variant marker)' 134
+$chkLin = New-Chk 'Linux    (the AD marker)' 134
 
 # result banner: tinted background, coloured bar on the left, icon, bold headline + one detail line
 $aRes = New-Object Windows.Forms.Panel; $aRes.Location = '16,162'; $aRes.Size = '688,48'; $aRes.Visible = $false; $aRes.Tag = $C_ACCENT
@@ -566,7 +566,7 @@ function Show-Action($kind) {
       $all = $d.Variant -eq 'AD'
       $aTitle.Text = if ($all) { 'Enable pass-through  (Windows, pre-boot and Linux)' } else { 'Enable pass-through  (Windows and pre-boot)' }
       $aBody.Text = 'Burns the AUX bit into the chip''s efuse (writes 0x03).' +
-                    $(if ($all) { ' On this -AD chip that switches on all three systems at once.' } else { ' Linux also needs a recognised chip variant, which this chip is not.' })
+                    $(if ($all) { ' With the AD marker this card has, that switches on all three systems at once.' } else { ' Linux also needs a marker r8152 accepts, which this card does not have.' })
       $aNote.Text = ([char]0x26A0 + '  Permanent - efuse can be written once and never undone.'); $aNote.ForeColor = $C_RED
       Set-Btn $btnA1 '1   Preview' 'outline' $true; Set-Btn $btnA2 '2   Burn AUX bit' 'danger' $false
       Set-Result 'hint' 'Start with Preview' 'It checks the card and shows exactly what would be burned - nothing is written. Burn unlocks after it.'
@@ -575,8 +575,8 @@ function Show-Action($kind) {
       $nw = -not ($d.Bit1 -and $d.Bit0); $nl = [bool]$script:needLin      # 0xCFDB is only ever written whole, as 0x03
       $aTitle.Text = if ($nw -and $nl) { 'Enable pass-through' } elseif ($nl) { 'Enable Linux' } else { 'Enable pass-through  (Windows and pre-boot)' }
       $aBody.Text = if ($nw -and $nl) { 'Burns what you tick into the chip''s efuse. Both together: one burn, one re-plug.' }
-                    elseif ($nl) { 'Burns the -AD chip-variant marker into the chip''s efuse, so the Linux r8152 driver accepts it. Windows and pre-boot are not affected.' }
-                    elseif ($d.Variant -eq 'AD') { 'Burns both clone bits into the chip''s efuse (0xCFDB = 0x03). On this -AD chip that switches on Linux too.' }
+                    elseif ($nl) { 'Burns the AD marker (USB_MISC_0 = 0x1000) into the chip''s efuse, so the Linux r8152 driver accepts it. Windows and pre-boot are not affected.' }
+                    elseif ($d.Variant -eq 'AD') { 'Burns both clone bits into the chip''s efuse (0xCFDB = 0x03). With the AD marker this card has, that switches on Linux too.' }
                     else { 'Burns both clone bits into the chip''s efuse (0xCFDB = 0x03).' }
       $aNote.Text = ([char]0x26A0 + '  Permanent - efuse can be written once and never undone.'); $aNote.ForeColor = $C_RED
       $script:syncing = $true
@@ -608,7 +608,7 @@ function Show-Action($kind) {
     }
     'nolinux' {
       $aTitle.Text = 'Linux: not on this card'
-      $aBody.Text = 'Linux only accepts recognised chip variants (-AD, -BND, -BD or Lenovo). This chip isn''t one, and this tool has no proven way to change that.'
+      $aBody.Text = 'Linux only accepts a card with a marker it knows (AD, BND, BD) or a Lenovo chip. This card has none, and this tool has no proven way to add one here.'
       $aNote.Text = 'Windows and pre-boot work and are not affected.'
     }
     'error' {
@@ -852,10 +852,10 @@ function Fill-Details {
   Add-Txt $rtb "`r`nTHE MARKERS ON THIS CARD`r`n" $C_ACCENT $true $FS_L
   Add-Txt $rtb ("  0xCFDB = {0}   capability byte, loaded at every power-on`r`n" -f $d.CfdbHex) $C_TEXT $false $FS_M $true
   Add-Txt $rtb ("    bit1 AUX-clone = {0}   what Windows and pre-boot check`r`n" -f $d.Bit1) $(if ($d.Bit1) {$C_GREEN} else {$C_RED}) $true $FS_M $true
-  Add-Txt $rtb ("    bit0 RT-clone  = {0}   Linux checks it too, on -AD chips only`r`n" -f $d.Bit0) $C_TEXT $false $FS_M $true
-  Add-Txt $rtb ("  USB_MISC_0 = {0}   USB_MISC_1 = {1}   chip variant, what Linux checks first`r`n" -f $d.M0, $d.M1) $C_TEXT $false $FS_M $true
-  $v = if ($d.Variant -and $d.Variant -ne 'none') { "RTL8153-$($d.Variant)" -replace 'RTL8153-Lenovo','Lenovo chip' } else { 'none - a plain chip' }
-  Add-Txt $rtb ("    variant = {0}`r`n" -f $v) $(if ($d.Variant -and $d.Variant -ne 'none') {$C_GREEN} else {$C_TEXT}) $true $FS_M $true
+  Add-Txt $rtb ("    bit0 RT-clone  = {0}   Linux checks it too, with the AD marker only`r`n" -f $d.Bit0) $C_TEXT $false $FS_M $true
+  Add-Txt $rtb ("  USB_MISC_0 = {0}   USB_MISC_1 = {1}   the marker registers Linux checks first`r`n" -f $d.M0, $d.M1) $C_TEXT $false $FS_M $true
+  $v = if ($d.Variant -and $d.Variant -ne 'none') { $(if ($d.Variant -eq 'Lenovo') { 'Lenovo chip' } else { "$($d.Variant) marker" }) } else { 'none' }
+  Add-Txt $rtb ("    marker = {0}`r`n" -f $v) $(if ($d.Variant -and $d.Variant -ne 'none') {$C_GREEN} else {$C_TEXT}) $true $FS_M $true
   Add-Txt $rtb "`r`nHow these markers work: docs/how-mac-passthrough-works.md`r`n" $C_MUTED $false $FS_S
   $detDump.Text = 'reading the card''s settings (efuse, and the SPI flash if there is one)...'; [Windows.Forms.Application]::DoEvents()
   Set-Busy $true
@@ -902,7 +902,7 @@ PASS-THROUGH BY SYSTEM
 
 MARKERS
   0xCFDB     = $($d.CfdbHex)   (bit1 AUX-clone = $($d.Bit1), bit0 RT-clone = $($d.Bit0))
-  USB_MISC_0 = $($d.M0)    USB_MISC_1 = $($d.M1)    chip variant = $($d.Variant)
+  USB_MISC_0 = $($d.M0)    USB_MISC_1 = $($d.M1)    r8152 marker = $($d.Variant)
 
 --- settings: efuse raw + decoded (and the start of an SPI flash, if any) ---
 $($st -replace "`r?`n", "`r`n")

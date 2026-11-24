@@ -39,8 +39,8 @@ condition; "—" means not checked:
 |---|:---:|:---:|:---:|:---:|
 | **Windows** | **1** | **1** \* | — | — |
 | **Pre-boot / PXE** | **1** | **1** \*\* | — | — |
-| **Linux** — chip the driver calls "RTL8153-AD" | — | **1** | **`0x1000`** | — |
-| **Linux** — chip it calls "RTL8153-BND" / "-BD" | — | — | — | **1** |
+| **Linux** — AD marker (the driver calls it "RTL8153-AD") | — | **1** | **`0x1000`** | — |
+| **Linux** — BND / BD marker ("RTL8153-BND" / "-BD") | — | — | — | **1** |
 
 Linux needs **any one** of its two rows; on a Lenovo device (recognised by its USB vendor ID) it
 skips these checks altogether.
@@ -71,7 +71,9 @@ own value from the factory, then any efuse record on top — which is how RtlPas
 Where the names come from — the chip itself holds only the numbers: **Windows driver** — its log
 messages *"Is AUX / RT MAC clone support system"* (`rtump64x64.sys`, `NIC_QuerySpecificHwCaps`);
 **Linux driver** — the defines and comments in `drivers/net/usb/r8152.c`, which also name the
-variants "RTL8153-AD", "-BND" and "-BD".
+variants "RTL8153-AD", "-BND" and "-BD". Those are only names: the driver tests the same registers on
+every chip it drives, so an RTL8156 with `USB_MISC_0 = 0x1000` passes too (verified). The tool calls
+them the AD / BND / BD *markers*.
 
 ### Realtek's names for these bits
 

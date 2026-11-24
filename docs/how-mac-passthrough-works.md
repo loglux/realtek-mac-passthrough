@@ -98,7 +98,8 @@ real identity before any OS loads.
 
 ### Linux (`r8152` driver)
 
-Linux checks the chip variant first. From `vendor_mac_passthru_addr_read()` in the mainline kernel
+Linux checks a marker register first (its comments call these RTL8153 variants, but the test is the
+same on every chip it drives - an RTL8156 with the AD marker passes). From `vendor_mac_passthru_addr_read()` in the mainline kernel
 (excerpt, unchanged):
 
 ```c

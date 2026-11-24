@@ -7,9 +7,9 @@ Usage:
   [--dll new|old|auto] on either; --records defaults to ad
 
 The records:
-  cfdb   40 CF DB 03      0xCFDB = 0x03, both clone bits: Windows and pre-boot (and Linux on -AD chips).
+  cfdb   40 CF DB 03      0xCFDB = 0x03, both clone bits: Windows and pre-boot (and Linux with the AD marker).
                           RTL8153 family only - on RTL8156 efuse.py burns it (proven there).
-  ad     41 D8 1A 00 10   USB_MISC_0 = 0x1000, the -AD chip-variant marker: Linux (r8152). It also needs
+  ad     41 D8 1A 00 10   USB_MISC_0 = 0x1000, the AD marker: Linux (r8152). It also needs
                           0xCFDB bit0, so it is refused alone on a chip without it (pick cfdb with it).
                           RTL8153 family only.
   rev    41 <reg> <rev>   EXPERIMENTAL. The USB revision (bcdDevice) with its low nibble F -> 2: the Windows
@@ -44,7 +44,7 @@ from passthru import AD_MASK, AD_VALUE  # noqa: E402
 from jsonout import emit, wanted  # noqa: E402
 from rtldiag import EfuseUnavailable, RtlDiag  # noqa: E402
 
-REG, VALUE = 0xD81A, 0x1000          # USB_MISC_0 = 0x1000: r8152 sees an RTL8153-AD
+REG, VALUE = 0xD81A, 0x1000          # USB_MISC_0 = 0x1000: the AD marker r8152 accepts
 ORDER = ("cfdb", "ad", "rev")        # the records, in burn order
 WHAT = {"cfdb": "0xCFDB = 0x03, both clone bits: Windows and pre-boot",
         "ad": "USB_MISC_0 = 0x1000, the -AD marker: Linux",
@@ -90,7 +90,7 @@ def plan(c, want):
             skipped.append("the -AD marker")
             print("PLAN SKIP ad = the chip already reports the -AD marker")
         elif not cf & 1 and "cfdb" not in todo:
-            plan_result("REFUSED", "0xCFDB bit0 is not set - on an -AD chip Linux needs it too, so the marker alone "
+            plan_result("REFUSED", "0xCFDB bit0 is not set - with the AD marker Linux needs it too, so the marker alone "
                                    "would not help (burn 0xCFDB = 0x03 with it)")
             return None
         else:

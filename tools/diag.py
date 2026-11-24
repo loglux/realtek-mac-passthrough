@@ -1,7 +1,7 @@
 """Read a Realtek USB card's plain registers (USB-OCP) via the diag DLL. Read-only (except --eeprom-test).
 
 Usage:  python -I diag.py {InterfaceGUID} [--dll new|old|auto] [--vid 0BDA] [--eeprom-test]
-Prints bcdDevice(REV), USB_MISC_0/1 and 0xCFDB with its RT/AUX clone bits, then the chip variant and a
+Prints bcdDevice(REV), USB_MISC_0/1 and 0xCFDB with its RT/AUX clone bits, then the r8152 marker and a
 per-layer pass-through verdict (Windows / PXE / Linux, see passthru.py). Register reads use
 USBDirectRead (reliable, no off-by-one). With --json the last line is JSON {...} - that is what the GUI reads.
 --eeprom-test: tell "blank EEPROM" from "no EEPROM" the way Realtek's tool does - writes a test word to
