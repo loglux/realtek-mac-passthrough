@@ -18,7 +18,7 @@ from efuse_core import (EFUSE_DWORD, EFUSE_OLD, EFUSE_V3, PG_STAMP_REGS, describ
                         efuse_provenance, parse_autoload_records, variant_name)
 from passthru import chip_variant as linux_variant
 from rtldiag import EfuseUnavailable, RtlDiag
-from storage import flash_name, has_flash
+from storage import eeprom_has_content, flash_name, has_flash
 
 NAMES = {0xC000: "MAC address", 0xCFDB: "SW_FEATURE - MAC clone / pass-through bits",
          0xD81A: "USB_MISC_0 - r8152 AD marker", 0xD81F: "USB_MISC_1 - r8152 BD/BND markers"}
@@ -131,7 +131,7 @@ def _summary(recs, data, start, store, counter_at=None, misc=None, capacity=None
     if 0xCFDB not in regs:
         print("  no 0xCFDB record - the pass-through bits are the chip's own default")
     if 0xD81A not in regs and 0xD81F not in regs:
-        print("  no USB_MISC record - the chip-variant value comes from the chip itself, not from these records")
+        print("  no USB_MISC record - the marker registers hold the chip's own values, not values from these records")
         if misc:
             print(f"               (USB_MISC_0 = 0x{misc[0]:04X}, USB_MISC_1 = 0x{misc[1]:02X}: {misc[2]})")
     elif misc:
@@ -155,7 +155,7 @@ def main(argv):
         info = c.chip_info()
         m0, m1 = c.usb_read(0xD81A, 2), c.usb_read(0xD81F, 1)
         kind, size = info["protocol"], info["size"]
-        efuse, proto = None, ""
+        efuse, proto, why = None, "", "this tool does not know the efuse protocol of this chip type"
         c.pg_enter()
         try:
             if kind == EFUSE_DWORD:
@@ -168,24 +168,32 @@ def main(argv):
                 efuse, proto = c.efuse_v3_dump(size), EFUSE_V3 + " protocol"
             elif kind == EFUSE_OLD:
                 efuse, proto = c.efuse8153_dump(size), EFUSE_OLD + " protocol"
-        except EfuseUnavailable:
-            efuse = None
+        except EfuseUnavailable as e:
+            efuse, why = None, f"the efuse controller did not answer ({e})"
         finally:
             c.pg_leave()
+        try:
+            w0, w38, _ = c.eeprom_probe(new_family=info["type"] >= 0x4000)
+            eep = (f"content (word0 0x{w0:04X}) - the chip loads settings from it after the efuse"
+                   if eeprom_has_content(w0, w38) else
+                   f"no content (word0/word38 = {w0:04X} {w38:04X}) - nothing loads from an EEPROM;"
+                   " diag.py --eeprom-test tells blank from not fitted")
+        except OSError as e:
+            eep = f"probe failed: {e}"
 
         recs = parse_autoload_records(efuse) if efuse is not None else None
         if recs is not None:
             info = c.chip_info(recs)               # tells factory values from ones an efuse record set
         lin = linux_variant(m0, m1)
         realtek = variant_name(info["factory_variant"] if info["overrides"] else info["variant"])
-        misc = (m0, m1, (f'Linux sees "-{lin}"' if lin else 'Linux sees a plain chip')
+        misc = (m0, m1, (f'Linux sees the {lin} marker' if lin else 'no marker Linux accepts')
                 + (f', Realtek calls the chip itself {realtek}' if realtek and info["overrides"] else
                    f', Realtek calls it {realtek}' if realtek else ''))
         print(f"CHIP {info['name']}")
-        print("STORAGE efuse = " + (f"responding ({proto})" if efuse is not None else
-              "could not be read - chip type not known to this tool, or the controller did not answer"))
+        print("STORAGE efuse = " + (f"responding ({proto})" if efuse is not None else f"not read - {why}"))
         print("STORAGE flash = " + (f"{flash_name(jedec)} - holds the driver install disk, not chip settings"
                                     if flash is not None else "none"))
+        print("STORAGE eeprom = " + eep)
 
         if efuse is not None and recs is not None:
             print(f"\n=== EFUSE ({len(efuse)} bytes - the whole address space, one-time programmable) ===")

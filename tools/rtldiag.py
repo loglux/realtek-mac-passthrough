@@ -277,21 +277,31 @@ class RtlDiag:
                 req[6 + off + i] = bb
         return req, off
 
+    # Every DLL access returns 1 on success and 0 on failure; on a failed read the buffer stays all zero.
+    # So the return code is checked on every call: a failed access must never pass for a register = 0.
+    @staticmethod
+    def _check(ret, what, addr):
+        if ret != 1:
+            raise OSError(f"{what} of register 0x{addr:04X} failed (DLL returned {ret}) - the card did not answer;"
+                          " re-plug it or try again")
+
     def dread(self, addr, size):
         req, off = self._mkreq(addr, size)
-        self._DRd(self.ctx, req)
+        self._check(self._DRd(self.ctx, req), "read", addr)
         return bytes(req)[6 + off:6 + off + size]
 
     def dwrite(self, addr, size, data):
         req, _ = self._mkreq(addr, size, data)
-        return self._DWr(self.ctx, req)
+        self._check(self._DWr(self.ctx, req), "write", addr)
+        return 1
 
     # --- USBDirectRead for plain USB-OCP registers (no off-by-one) ---
     def usb_read(self, addr, size):
         if self._USBRd is None:
             raise RuntimeError("USBDirectRead not exported by this DLL")
         buf = (ctypes.c_ubyte * size)()
-        self._USBRd(ctypes.cast(self.ctx, ctypes.c_void_p), 0, addr & 0xffff, ctypes.cast(buf, ctypes.c_void_p), size)
+        self._check(self._USBRd(ctypes.cast(self.ctx, ctypes.c_void_p), 0, addr & 0xffff,
+                                ctypes.cast(buf, ctypes.c_void_p), size), "USB read", addr)
         return int.from_bytes(bytes(buf), "little")
 
     def usb_write(self, addr, size, value):
@@ -299,7 +309,9 @@ class RtlDiag:
         if self._USBWr is None:
             raise RuntimeError("USBDirectWrite not exported by this DLL")
         buf = (ctypes.c_ubyte * size)(*value.to_bytes(size, "little"))
-        return self._USBWr(ctypes.cast(self.ctx, ctypes.c_void_p), 0, addr & 0xffff, ctypes.cast(buf, ctypes.c_void_p), size)
+        self._check(self._USBWr(ctypes.cast(self.ctx, ctypes.c_void_p), 0, addr & 0xffff,
+                                ctypes.cast(buf, ctypes.c_void_p), size), "USB write", addr)
+        return 1
 
     def read_bcd(self):
         """bcdDevice (REV) from the USB descriptor, or None if the DLL does not export it."""
