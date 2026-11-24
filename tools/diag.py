@@ -1,9 +1,11 @@
-"""Read a Realtek USB card's plain registers (USB-OCP) via the diag DLL. Read-only.
+"""Read a Realtek USB card's plain registers (USB-OCP) via the diag DLL. Read-only (except --eeprom-test).
 
-Usage:  python -I diag.py {InterfaceGUID} [--dll new|old|auto] [--vid 0BDA]
+Usage:  python -I diag.py {InterfaceGUID} [--dll new|old|auto] [--vid 0BDA] [--eeprom-test]
 Prints bcdDevice(REV), USB_MISC_0/1 and 0xCFDB with its RT/AUX clone bits, then the chip variant and a
 per-layer pass-through verdict (Windows / PXE / Linux, see passthru.py). Register reads use
 USBDirectRead (reliable, no off-by-one). With --json the last line is JSON {...} - that is what the GUI reads.
+--eeprom-test: tell "blank EEPROM" from "no EEPROM" the way Realtek's tool does - writes a test word to
+EEPROM word 0, reads it back, puts the original back. The only write in this tool; the efuse is not touched.
 """
 import os
 import sys
@@ -19,7 +21,7 @@ from jsonout import emit, wanted
 
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
-        print("usage: diag.py {InterfaceGUID} [--dll new|old|auto] [--json]")
+        print("usage: diag.py {InterfaceGUID} [--dll new|old|auto] [--json] [--eeprom-test]")
         return 2
     guid = argv[0]
     dll = argv[argv.index("--dll") + 1] if "--dll" in argv else "auto"
@@ -62,11 +64,19 @@ def main(argv):
         v = verdict(m0, m1, cfdb, vid, clone=clone, profile=profile)
         for line in format_lines(v):
             print(line)
-        storage = {"dc00": None, "jedec": None, "text": ""}
+        storage = {"dc00": None, "jedec": None, "eeprom": None, "text": ""}
         try:
             dc00, jedec = c.flash_id()
-            storage = {"dc00": dc00, "jedec": jedec.hex(" ").upper(), "text": describe_storage(jedec, dc00)}
-            print(f"  storage DC00 = 0x{dc00:02X}   SPI flash ID = {storage['jedec']}")
+            try:
+                eeprom = c.eeprom_probe(new_family=info["type"] >= 0x4000, write_test="--eeprom-test" in argv)
+            except Exception as e:     # a failed EEPROM probe is reported as such, not guessed
+                eeprom = str(e) or type(e).__name__
+            storage = {"dc00": dc00, "jedec": jedec.hex(" ").upper(),
+                       "eeprom": " ".join(f"{w:04X}" for w in eeprom[:2]) if isinstance(eeprom, tuple) else None,
+                       "eeprom_fitted": eeprom[2] if isinstance(eeprom, tuple) else None,
+                       "text": describe_storage(jedec, eeprom)}
+            print(f"  SPI flash ID = {storage['jedec']}   EEPROM word0/word38 = {storage['eeprom'] or '-'}"
+                  f"   (0xDC00 = 0x{dc00:02X}, not a storage flag)")
             print(f"CONFIG STORAGE = {storage['text']}")
         except Exception as e:     # never let the storage probe break the register read
             storage["text"] = f"unknown (probe failed: {e})"

@@ -6,8 +6,18 @@ its efuse (on-chip, one-time programmable) and, if the board has one, from an ex
 "driver auto-install" disk image (the card shows up as a CD with the driver on first plug-in) - the
 chip does not load settings from it. Verified on a UGREEN RTL8153: a settings record written to its
 flash was not applied after a power cycle, and the flash holds an ISO image from 0x1000.
-An SPI flash answers the standard JEDEC ID command (0x9F); no answer (00 00 00 / FF FF FF) = no flash.
-EEPROM detection is not implemented: no card with an EEPROM was available to verify it against.
+
+Two probes (read-only unless asked for the EEPROM write test):
+- SPI flash: the standard JEDEC ID command (0x9F); no answer (00 00 00 / FF FF FF) = no flash.
+- EEPROM: words 0 and 0x38, judged by the rule of Realtek's own tool (CheckEepromType): content is
+  recognised when word 0 is not FFFF / 0000 / 8129 and word 0x38 is not 0000 / FFFF. Otherwise there is
+  no EEPROM content, so nothing loads from one. Whether such a board has a blank EEPROM or none at all
+  is settled only by a write test, as Realtek's tool does it (diag.py --eeprom-test, rtldiag.eeprom_probe):
+  a test word is written to word 0 and read back, then the original is put back. A blank EEPROM reads
+  FFFF; reading alone cannot tell "none" from "blank", because with no chip the data line reads whatever
+  its pull resistor gives.
+Byte 0xDC00 is not a storage indicator: 0x40 reads on a card with a flash (UGREEN) and on one without
+(RTL8153E dongle). The Windows driver reads it as the board's PCRID on RTL8153B.
 """
 
 FLASH_VENDORS = {0x85: "PUYA", 0xEF: "Winbond", 0xC8: "GigaDevice", 0xC2: "Macronix", 0x1C: "EON",
@@ -30,15 +40,30 @@ def flash_name(jedec: bytes) -> str:
     return f"{vendor} {size}"
 
 
-def describe(jedec: bytes, dc00: int = 0) -> str:
+def eeprom_has_content(w0: int, w38: int) -> bool:
+    """Realtek's tool rule (CheckEepromType)."""
+    return w0 not in (0xFFFF, 0x0000, 0x8129) and w38 not in (0x0000, 0xFFFF)
+
+
+def describe(jedec: bytes, eeprom=None) -> str:
     """One line for the GUI: where the settings live.
 
-    dc00 = the chip's storage-status byte (0xDC00): 0x40 was read on a card with an SPI flash, 0x00 on a
-    card with none. If it reports external memory but the flash did not answer, say so - never claim
-    "no external memory" on contradictory evidence.
+    eeprom = (word 0, word 0x38[, fitted]) from rtldiag.eeprom_probe - fitted True/False after the write
+    test, None without it - or a string saying why the probe failed.
     """
-    if not has_flash(jedec):
-        if dc00 & 0x40:
-            return f"external memory reported (0xDC00=0x{dc00:02X}) but the SPI flash did not answer - unknown"
-        return "efuse (one-time) - no external memory found; EEPROM not probed"
-    return f"efuse (one-time) - the SPI flash ({flash_name(jedec)}) holds the driver install disk, not settings"
+    if isinstance(eeprom, tuple):
+        w0, w38 = eeprom[:2]
+        fitted = eeprom[2] if len(eeprom) > 2 else None
+        if eeprom_has_content(w0, w38):
+            where = f"efuse + external EEPROM (word0 0x{w0:04X})"
+        elif fitted is True:
+            where = f"efuse only (one-time) - an EEPROM is fitted but blank (write test; word0 0x{w0:04X})"
+        elif fitted is False:
+            where = "efuse only (one-time) - no EEPROM fitted (write test)"
+        else:
+            where = f"efuse only (one-time) - no EEPROM content (word0 0x{w0:04X})"
+    else:
+        where = "efuse (one-time); EEPROM " + (f"probe failed: {eeprom}" if eeprom else "not probed")
+    if has_flash(jedec):
+        return f"{where}; SPI flash {flash_name(jedec)} holds the driver install disk, not settings"
+    return f"{where}; no SPI flash"

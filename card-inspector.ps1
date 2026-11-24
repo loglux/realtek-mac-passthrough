@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $ROOT    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TOOLS   = Join-Path $ROOT 'tools'
 $PY      = 'python'
-$Version = '0.4.0'
+$Version = '0.4.1'
 $script:DemoMode = $Demo.IsPresent -or ($Screenshot -ne '')
 $DEMO_RED_GUID   = '{11111111-1111-1111-1111-111111111111}'
 $DEMO_GREEN_GUID = '{22222222-2222-2222-2222-222222222222}'
@@ -84,8 +84,8 @@ function Demo-Py($script, $argline) {
           $(if ($script:demoBare) { "PASSTHRU Windows = NO   (AUX-clone bit (0xCFDB bit1) is not set)" } else { "PASSTHRU Windows = YES  (AUX-clone bit (0xCFDB bit1) is set)" }),
           $(if ($script:demoBare) { "PASSTHRU PXE     = NO   (AUX-clone bit (0xCFDB bit1) is not set)" } else { "PASSTHRU PXE     = YES  (both clone bits set - 0x03 verified at pre-boot on a Dell)" }),
           "PASSTHRU Linux   = $lin",
-          "  storage DC00 = 0x40   SPI flash ID = 85 60 15",
-          "CONFIG STORAGE = efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings",
+          "  SPI flash ID = 85 60 15   EEPROM word0/word38 = FFFF FFFF   (0xDC00 = 0x40, not a storage flag)",
+          "CONFIG STORAGE = efuse only (one-time) - no EEPROM content (word0 0xFFFF); SPI flash PUYA 2 MB holds the driver install disk, not settings",
           (DJ @{ tool='diag'; rev=0x310D; cfdb=$(if ($script:demoBare) {0} else {3}); usb_misc_0=$(if ($script:demoAD) {0x1000} else {0}); usb_misc_1=0x10
                  linux_variant=$(if ($script:demoAD) {'AD'} else {$null})
                  chip=@{ name=$chip; type=0x3106; variant=0x216; protocol='type 3 (V3)'; new_chip=$false }
@@ -93,7 +93,7 @@ function Demo-Py($script, $argline) {
                  layers=@{ Windows=@{ ok=(-not $script:demoBare); why=$(if ($script:demoBare) {'AUX-clone bit (0xCFDB bit1) is not set'} else {'AUX-clone bit (0xCFDB bit1) is set'}) }
                            PXE=@{ ok=(-not $script:demoBare); why=$(if ($script:demoBare) {'AUX-clone bit (0xCFDB bit1) is not set'} else {'both clone bits set - 0x03 verified at pre-boot on a Dell'}) }
                            Linux=@{ ok=[bool]$script:demoAD; why=($lin -replace '^\w+\s+\(|\)$','') } }
-                 storage=@{ dc00=0x40; jedec='85 60 15'; text='efuse (one-time) - the SPI flash (PUYA 2 MB) holds the driver install disk, not settings' } })) -join "`r`n")
+                 storage=@{ dc00=0x40; jedec='85 60 15'; eeprom='FFFF FFFF'; text='efuse only (one-time) - no EEPROM content (word0 0xFFFF); SPI flash PUYA 2 MB holds the driver install disk, not settings' } })) -join "`r`n")
       }
       $green = $g -eq 'green'
       $cf = if ($green) {'0x03'} else {'0x00'}; $b = if ($green) {1} else {0}; $yn = if ($green) {'YES'} else {'NO '}
@@ -108,12 +108,12 @@ function Demo-Py($script, $argline) {
         ("bcdDevice(REV) = " + $(if ($bf) {'0x310F'} else {'0x3104'})),"CHIP = RTL8156BG (type 0x4102), efuse protocol = type 2 (dword)","  0xD81A USB_MISC_0 = 0x1000","  0xD81F USB_MISC_1 = 0x00",
         ("  0xCFDB EFUSE(PASS_THRU) = {0}   bit0(RT-clone)={1}  bit1(AUX-clone)={1}" -f $cf,$b),"  chip variant (r8152) = AD",
         ("PASSTHRU Windows = {0}  ({1})" -f $(if ($winOk) {'YES'} else {'NO '}),$winWhy),("PASSTHRU PXE     = {0}  ({1})" -f $yn,$pxe),("PASSTHRU Linux   = {0}  ({1})" -f $yn,$lin),
-        "  storage DC00 = 0x00   SPI flash ID = 00 00 00","CONFIG STORAGE = efuse (one-time) - no external memory found; EEPROM not probed",
+        "  SPI flash ID = 00 00 00   EEPROM word0/word38 = FFFF FFFF   (0xDC00 = 0x00, not a storage flag)","CONFIG STORAGE = efuse only (one-time) - no EEPROM content (word0 0xFFFF); no SPI flash",
         (DJ @{ tool='diag'; rev=$(if ($bf) {0x310F} else {0x3104}); cfdb=$(if ($green) {3} else {0}); usb_misc_0=0x1000; usb_misc_1=0; linux_variant='AD'; driver=$drv
                chip=@{ name='RTL8156BG (type 0x4102)'; type=0x4102; variant=0x502; protocol='type 2 (dword)'; new_chip=$false }
                dll=@{ family='Direct_API'; version='5.0.0.2'; exports=216; path='dll\new\RtlDirectDiagLib64.dll' }
                layers=@{ Windows=@{ ok=$winOk; why=$winWhy }; PXE=@{ ok=$green; why=$pxe }; Linux=@{ ok=$green; why=$lin } }
-               storage=@{ dc00=0; jedec='00 00 00'; text='efuse (one-time) - no external memory found; EEPROM not probed' } })) -join "`r`n")
+               storage=@{ dc00=0; jedec='00 00 00'; eeprom='FFFF FFFF'; text='efuse only (one-time) - no EEPROM content (word0 0xFFFF); no SPI flash' } })) -join "`r`n")
     }
     'settings.py' {
       if ($g -eq 'plain') {
@@ -691,8 +691,11 @@ function Read-Card {
     $v = if ($d.Layers.Contains($k)) { $d.Layers[$k].Val } else { '?' }
     Set-Tile $k $(switch ($v) { 'YES' {'yes'} 'NO' {'no'} default {'unk'} }) (Tile-Reason $k $d)
   }
-  $fl = [regex]::Match($d.Storage, 'SPI flash \(([^)]+)\)')
-  $pretty = if ($d.Storage -like 'efuse*') { 'efuse  -  one-time, permanent' + $(if ($fl.Success) { "      (the SPI flash, $($fl.Groups[1].Value), holds the driver install disk)" } else { '' }) }
+  # storage.py: 'efuse only ...' / 'efuse + external EEPROM ...' / 'efuse (one-time); EEPROM probe failed ...', then '; SPI flash <name> holds ...'
+  $fl = [regex]::Match($d.Storage, 'SPI flash (.+?) holds')
+  $flash = if ($fl.Success) { "      (the SPI flash, $($fl.Groups[1].Value), holds the driver install disk)" } else { '' }
+  $pretty = if ($d.Storage -like 'efuse only*') { 'efuse  -  one-time, permanent' + $flash }
+            elseif ($d.Storage -like 'efuse + external EEPROM*') { 'efuse + external EEPROM' + $flash }
             else { $d.Storage }
   $lblStore.Text = 'Settings stored in:  ' + $pretty
   $lin = $d.Layers.Contains('Linux') -and $d.Layers['Linux'].Val -eq 'YES'

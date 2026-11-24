@@ -365,9 +365,63 @@ class RtlDiag:
                 self.pg_leave()
 
     def flash_id(self):
-        """(storage-status byte at 0xDC00, 3-byte JEDEC ID). An ID of 00 00 00 / FF FF FF = no SPI flash."""
+        """(byte 0xDC00, 3-byte JEDEC ID). An ID of 00 00 00 / FF FF FF = no SPI flash."""
         dc00 = self._rb(0xDC00)
         return dc00, self._flash_session(lambda: self._spi(0x9F, 3))
+
+    # --- external EEPROM (93Cxx), read-only: the probe of Realtek's tool (CheckEepromType) without its
+    # write test. A word is read through PLA 0xDC80: write 0x80<addr>0000 (bit31 = go), wait for bit31 to
+    # clear, the low 16 bits are the word (EepromReadUshort). On the RTL8156/8157 family the tool first
+    # sets 0xDC48 = (v & 0xFEBF) | 0x80; we do the same and put 0xDC48 back afterwards.
+    def eeprom_word(self, addr, polls=10000):
+        self.dwrite(0xDC80, 4, ((0x8000 | (addr & 0xFF)) << 16).to_bytes(4, "little"))
+        for _ in range(polls):
+            v = int.from_bytes(self.dread(0xDC80, 4), "little")
+            if not v & 0x80000000:
+                return v & 0xFFFF
+        raise OSError("EEPROM controller (0xDC80) stayed busy - timed out")
+
+    def eeprom_write_word(self, addr, value, polls=10000):
+        """EepromWriteUshort: write 0x40<addr><value> to 0xDC80 (bit30 = go), wait for bit30 to clear."""
+        self.dwrite(0xDC80, 4, (((0x4000 | (addr & 0xFF)) << 16) | (value & 0xFFFF)).to_bytes(4, "little"))
+        for _ in range(polls):
+            if not int.from_bytes(self.dread(0xDC80, 4), "little") & 0x40000000:
+                return
+        raise OSError("EEPROM controller (0xDC80) stayed busy on write - timed out")
+
+    def eeprom_probe(self, new_family, write_test=False):
+        """(word 0, word 0x38, fitted) of the external EEPROM, as Realtek's tool reads them to decide.
+        new_family = RTL8156/8157 (chip type 0x4000 and up). fitted is None unless write_test:
+        then, like Realtek's tool, a test word goes to word 0 and is read back - read back = an EEPROM is
+        fitted (the original word is written back and checked), unchanged = none. An EEPROM is rewritable,
+        nothing here touches the efuse."""
+        pg = self.pg_enter()
+        dc48 = int.from_bytes(self.dread(0xDC48, 2), "little") if new_family else 0
+        try:
+            if new_family:
+                self.dwrite(0xDC48, 2, ((dc48 & 0xFEBF) | 0x80).to_bytes(2, "little"))
+            w0, w38 = self.eeprom_word(0), self.eeprom_word(0x38)
+            fitted = None
+            if write_test:
+                test = 0x8129 if w0 != 0x8129 else 0x5AA5
+                self.eeprom_write_word(0, test)
+                back = self.eeprom_word(0)
+                if back == test:
+                    fitted = True
+                    self.eeprom_write_word(0, w0)
+                    if self.eeprom_word(0) != w0:
+                        raise OSError(f"EEPROM word 0 was not put back (wanted 0x{w0:04X}) - run the test again")
+                elif back == w0:
+                    fitted = False
+                else:
+                    raise OSError(f"EEPROM write test: wrote 0x{test:04X}, read 0x{back:04X} (was 0x{w0:04X})"
+                                  " - neither fitted nor absent; not judged")
+            return w0, w38, fitted
+        finally:
+            if new_family:
+                self.dwrite(0xDC48, 2, dc48.to_bytes(2, "little"))
+            if pg == 1:
+                self.pg_leave()
 
     # --- SPI flash writes: the same sequence RTUNicPG uses (FlashWritePage / FlashErase) ---
     def _flash_wait(self, polls=20000):
